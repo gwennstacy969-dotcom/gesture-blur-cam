@@ -4,10 +4,10 @@ import numpy as np
 from cvzone.HandTrackingModule import HandDetector
 
 # ==========================================
-#  Gesture Blur Camera - Triangle Edition
-#  Deteksi jari + Bentuk segitiga = Grayscale
-#  Gunakan kedua tangan, pertemukan ujung
-#  jempol & telunjuk membentuk segitiga △
+#  Gesture Camera - Full Edition
+#  1. Peace Sign (✌️) = Blur Seluruh Layar
+#  2. Jempol & Telunjuk = Blur dalam kotak
+#  3. Segitiga △ (dua tangan) = Grayscale
 # ==========================================
 
 def distance(p1, p2):
@@ -90,15 +90,18 @@ def main():
     detector = HandDetector(detectionCon=0.7, maxHands=2)
 
     print("=" * 50)
-    print("  GESTURE CAMERA - TRIANGLE GRAYSCALE EDITION")
+    print("  GESTURE CAMERA - FULL EDITION")
     print("  - Jari & landmark tangan terdeteksi otomatis")
-    print("  - Bentuk SEGITIGA dengan kedua tangan:")
-    print("    Pertemukan ujung jempol & telunjuk △")
-    print("    → Kamera jadi ABU-ABU (grayscale)")
+    print("  - Peace Sign (V) : Blur Full Screen")
+    print("  - Jempol & Telunjuk : Blur Area Kotak")
+    print("  - Segitiga △ (2 tangan) : Grayscale")
     print("  Tekan 'Q' untuk keluar")
     print("=" * 50)
 
-    # Smooth transition untuk grayscale
+    # Smooth transition untuk blur & grayscale
+    blur_level = 0.0
+    blur_speed = 0.15
+    max_blur_kernel = 99
     gray_level = 0.0
     gray_speed = 0.12
 
@@ -113,6 +116,9 @@ def main():
         # Deteksi tangan (draw=False, kita gambar sendiri biar lebih bagus)
         hands, frame = detector.findHands(frame, draw=False)
 
+        peace_detected = False
+        box_blur_detected = False
+        box_coords = None
         triangle_detected = False
         triangle_pts = None
 
@@ -122,6 +128,30 @@ def main():
             for i, hand in enumerate(hands):
                 color = hand_colors[i % len(hand_colors)]
                 draw_hand_landmarks(frame, hand, color)
+
+            # --- Gesture 1 tangan (ambil tangan pertama) ---
+            hand1 = hands[0]
+            fingers = detector.fingersUp(hand1)
+
+            # LOGIKA 1: Peace Sign (Telunjuk & Tengah UP) → Blur full screen
+            if fingers == [0, 1, 1, 0, 0] or fingers == [1, 1, 1, 0, 0]:
+                peace_detected = True
+
+            # LOGIKA 2: Jempol & Telunjuk saja UP → Blur area kotak
+            elif fingers == [1, 1, 0, 0, 0]:
+                box_blur_detected = True
+                lmList = hand1["lmList"]
+
+                # Ujung jempol (id:4) dan ujung telunjuk (id:8)
+                x1, y1 = lmList[4][0], lmList[4][1]
+                x2, y2 = lmList[8][0], lmList[8][1]
+
+                # Bounding box
+                x_min, x_max = max(0, min(x1, x2)), min(w, max(x1, x2))
+                y_min, y_max = max(0, min(y1, y2)), min(h, max(y1, y2))
+
+                if x_max - x_min > 20 and y_max - y_min > 20:
+                    box_coords = (x_min, y_min, x_max, y_max)
 
             # Deteksi segitiga: butuh 2 tangan
             if len(hands) == 2:
@@ -169,13 +199,33 @@ def main():
         # EKSEKUSI EFEK VISUAL
         # ====================================================
 
-        # Smooth transition grayscale
+        # 1. Animasi Blur Full Screen (Peace Sign)
+        if peace_detected:
+            blur_level = min(1.0, blur_level + blur_speed)
+        else:
+            blur_level = max(0.0, blur_level - blur_speed)
+
+        if blur_level > 0.01:
+            kernel_size = int(blur_level * max_blur_kernel)
+            kernel_size = max(1, kernel_size)
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+            blurred_frame = cv2.GaussianBlur(frame, (kernel_size, kernel_size), 0)
+            frame = cv2.addWeighted(blurred_frame, blur_level, frame, 1 - blur_level, 0)
+
+        # 2. Blur Area Kotak (Jempol & Telunjuk)
+        if box_blur_detected and box_coords:
+            x_min, y_min, x_max, y_max = box_coords
+            roi = frame[y_min:y_max, x_min:x_max]
+            roi_blurred = cv2.GaussianBlur(roi, (71, 71), 0)
+            frame[y_min:y_max, x_min:x_max] = roi_blurred
+
+        # 3. Smooth transition grayscale (Segitiga)
         if triangle_detected:
             gray_level = min(1.0, gray_level + gray_speed)
         else:
             gray_level = max(0.0, gray_level - gray_speed)
 
-        # Terapkan grayscale dengan transisi halus
         if gray_level > 0.01:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_bgr = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
@@ -199,8 +249,18 @@ def main():
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
 
         # Status overlay di pojok kiri atas
-        status = "TRIANGLE DETECTED!" if triangle_detected else "Detecting hands..."
-        status_color = (0, 255, 255) if triangle_detected else (200, 200, 200)
+        if triangle_detected:
+            status = "TRIANGLE -> GRAYSCALE"
+            status_color = (0, 255, 255)
+        elif peace_detected:
+            status = "PEACE SIGN -> BLUR"
+            status_color = (0, 200, 255)
+        elif box_blur_detected:
+            status = "BOX BLUR ACTIVE"
+            status_color = (255, 200, 0)
+        else:
+            status = "Detecting hands..."
+            status_color = (200, 200, 200)
 
         # Background kotak untuk teks status
         cv2.rectangle(frame, (10, 10), (350, 45), (0, 0, 0), cv2.FILLED)
@@ -208,17 +268,19 @@ def main():
         cv2.putText(frame, status, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, status_color, 2, cv2.LINE_AA)
 
-        # Tampilkan grayscale level jika aktif
-        if gray_level > 0.01:
-            pct = int(gray_level * 100)
-            bar_w = int(gray_level * 200)
+        # Tampilkan level bar jika blur atau grayscale aktif
+        active_level = max(blur_level, gray_level)
+        if active_level > 0.01:
+            label = "Gray" if gray_level > blur_level else "Blur"
+            pct = int(active_level * 100)
+            bar_w = int(active_level * 200)
             cv2.rectangle(frame, (10, 55), (210, 80), (0, 0, 0), cv2.FILLED)
             cv2.rectangle(frame, (10, 55), (10 + bar_w, 80), (0, 180, 255), cv2.FILLED)
             cv2.rectangle(frame, (10, 55), (210, 80), (200, 200, 200), 1)
-            cv2.putText(frame, f"Gray: {pct}%", (220, 75), cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.putText(frame, f"{label}: {pct}%", (220, 75), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
-        cv2.imshow('Gesture Camera - Triangle Grayscale', frame)
+        cv2.imshow('Gesture Camera - Full Edition', frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == ord('Q'):
