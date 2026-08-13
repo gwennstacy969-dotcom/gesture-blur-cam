@@ -366,6 +366,12 @@ def main():
     heart_center = (0, 0)
     heart_size = 50
 
+    # Delay/konfirmasi deteksi love gesture
+    love_hold_start = 0       # Waktu mulai menahan gesture
+    love_hold_duration = 1.2  # Harus tahan selama 1.2 detik
+    love_confirmed = False    # Apakah sudah dikonfirmasi
+    love_detecting = False    # Sedang dalam proses deteksi
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -383,7 +389,7 @@ def main():
         box_coords = None
         triangle_detected = False
         triangle_pts = None
-        love_detected = False
+        love_raw_detected = False   # Gesture terdeteksi frame ini (belum konfirmasi)
         love_center = None
         love_size = 0
 
@@ -396,10 +402,10 @@ def main():
 
             # --- Deteksi Love/Heart Gesture (prioritas tinggi, 2 tangan) ---
             if len(hands) == 2:
-                love_detected, love_center, love_size = is_heart_gesture(hands, detector)
+                love_raw_detected, love_center, love_size = is_heart_gesture(hands, detector)
 
             # --- Gesture 1 tangan (ambil tangan pertama) ---
-            if not love_detected:
+            if not love_raw_detected:
                 hand1 = hands[0]
                 fingers = detector.fingersUp(hand1)
 
@@ -424,7 +430,7 @@ def main():
                         box_coords = (x_min, y_min, x_max, y_max)
 
                 # Deteksi segitiga: butuh 2 tangan
-                if len(hands) == 2 and not love_detected:
+                if len(hands) == 2 and not love_raw_detected:
                     lm1 = hands[0]["lmList"]
                     lm2 = hands[1]["lmList"]
 
@@ -501,11 +507,69 @@ def main():
             gray_bgr = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
             frame = cv2.addWeighted(gray_bgr, gray_level, frame, 1 - gray_level, 0)
 
-        # 4. ❤️ Efek Love/Heart
-        if love_detected:
-            heart_level = min(1.0, heart_level + heart_speed)
+        # 4. ❤️ Efek Love/Heart — dengan delay konfirmasi
+        # Fase 1: Deteksi pola → tahan gesture → loading ring
+        if love_raw_detected:
+            if not love_detecting:
+                # Baru mulai mendeteksi
+                love_detecting = True
+                love_hold_start = current_time
+            # Hitung progress hold
+            hold_elapsed = current_time - love_hold_start
+            hold_progress = min(1.0, hold_elapsed / love_hold_duration)
+
+            # Update posisi center
             heart_center = love_center
             heart_size = love_size
+
+            # Gambar loading ring (lingkaran yang terisi sesuai progress)
+            if not love_confirmed:
+                ring_cx, ring_cy = love_center
+                ring_radius = 35
+                # Background ring (abu-abu transparan)
+                cv2.circle(frame, (ring_cx, ring_cy), ring_radius, (80, 80, 80), 2, cv2.LINE_AA)
+                # Progress arc (merah-pink, terisi sesuai progress)
+                end_angle = int(360 * hold_progress)
+                if end_angle > 0:
+                    cv2.ellipse(frame, (ring_cx, ring_cy), (ring_radius, ring_radius),
+                               -90, 0, end_angle, (130, 100, 255), 3, cv2.LINE_AA)
+                # Mini heart icon di tengah ring
+                mini_pts = generate_heart_points(ring_cx, ring_cy, 10, num_points=30)
+                if len(mini_pts) >= 3:
+                    mini_arr = np.array(mini_pts, dtype=np.int32)
+                    # Warna makin terang sesuai progress
+                    r_val = int(150 + 105 * hold_progress)
+                    cv2.fillPoly(frame, [mini_arr], (100, 80, r_val))
+                    cv2.polylines(frame, [mini_arr], True, (180, 140, 255), 1, cv2.LINE_AA)
+
+            # Cek apakah sudah cukup lama di-hold
+            if hold_progress >= 1.0 and not love_confirmed:
+                love_confirmed = True
+                # Burst partikel saat pertama kali dikonfirmasi!
+                for _ in range(20):
+                    p = HeartParticle(heart_center[0], heart_center[1], w, h)
+                    p.vx = random.uniform(-3.0, 3.0)
+                    p.vy = random.uniform(-5.0, -1.0)
+                    p.size = random.randint(6, 15)
+                    heart_particles.append(p)
+                for _ in range(10):
+                    angle = random.uniform(0, 2 * math.pi)
+                    sr = random.randint(10, 40)
+                    sx = int(heart_center[0] + sr * math.cos(angle))
+                    sy = int(heart_center[1] + sr * math.sin(angle))
+                    p = HeartParticle(sx, sy, w, h)
+                    p.is_sparkle = True
+                    p.size = random.randint(4, 10)
+                    heart_particles.append(p)
+        else:
+            # Gesture dilepas → reset deteksi
+            love_detecting = False
+            love_hold_start = 0
+            love_confirmed = False
+
+        # Fase 2: Efek aktif setelah dikonfirmasi
+        if love_confirmed:
+            heart_level = min(1.0, heart_level + heart_speed)
         else:
             heart_level = max(0.0, heart_level - heart_speed * 0.5)
 
@@ -513,34 +577,29 @@ def main():
             # Efek vignette merah/pink di pinggir layar
             draw_heart_vignette(frame, alpha=heart_level * 0.6)
 
-            # Animasi denyut hati (pulsing)
-            heart_pulse_time += 0.15
-            pulse = (math.sin(heart_pulse_time) + 1) / 2  # 0.0 - 1.0
-
-            # Gambar hati utama bersinar
-            draw_glowing_heart(frame, heart_center[0], heart_center[1],
-                             heart_size, alpha=heart_level, pulse=pulse)
-
-            # Spawn partikel baru
+            # Spawn partikel hati kecil-kecil terus menerus
             heart_spawn_timer += 1
-            if heart_spawn_timer >= 2:  # Setiap 2 frame
+            if heart_spawn_timer >= 3:  # Setiap 3 frame
                 heart_spawn_timer = 0
-                num_new = random.randint(1, 3)
+                num_new = random.randint(2, 5)
                 for _ in range(num_new):
-                    heart_particles.append(
-                        HeartParticle(heart_center[0], heart_center[1], w, h)
-                    )
+                    # Spawn dari area sekitar center, tersebar
+                    spread = max(30, heart_size)
+                    sx = heart_center[0] + random.randint(-spread, spread)
+                    sy = heart_center[1] + random.randint(-spread // 2, spread // 2)
+                    p = HeartParticle(sx, sy, w, h)
+                    p.size = random.randint(4, 10)  # Kecil-kecil
+                    heart_particles.append(p)
 
-            # Tambah sparkles di sekitar hati utama
-            if random.random() < 0.4:
-                angle = random.uniform(0, 2 * math.pi)
-                sparkle_r = heart_size + random.randint(5, 25)
-                sx = int(heart_center[0] + sparkle_r * math.cos(angle))
-                sy = int(heart_center[1] + sparkle_r * math.sin(angle))
+            # Tambah sparkles tersebar di layar
+            if random.random() < 0.5:
+                sx = random.randint(0, w)
+                sy = random.randint(0, h)
                 p = HeartParticle(sx, sy, w, h)
                 p.is_sparkle = True
-                p.size = random.randint(3, 8)
-                p.decay = random.uniform(0.02, 0.05)
+                p.size = random.randint(3, 7)
+                p.decay = random.uniform(0.02, 0.04)
+                p.vy = random.uniform(-1.5, -0.3)
                 heart_particles.append(p)
 
         # Update dan gambar semua partikel
@@ -553,8 +612,8 @@ def main():
         heart_particles = alive_particles
 
         # Batasi jumlah partikel agar performa tetap oke
-        if len(heart_particles) > 150:
-            heart_particles = heart_particles[-150:]
+        if len(heart_particles) > 200:
+            heart_particles = heart_particles[-200:]
 
         # Gambar segitiga jika terdeteksi
         if triangle_detected and triangle_pts:
@@ -573,48 +632,7 @@ def main():
                 cv2.circle(frame, pt, 10, (0, 255, 255), cv2.FILLED)
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # Status overlay di pojok kiri atas
-        if love_detected:
-            status = "LOVE HEART -> EFFECTS"
-            status_color = (130, 100, 255)  # Pink/merah
-        elif triangle_detected:
-            status = "TRIANGLE -> GRAYSCALE"
-            status_color = (0, 255, 255)
-        elif peace_detected:
-            status = "PEACE SIGN -> BLUR"
-            status_color = (0, 200, 255)
-        elif box_blur_detected:
-            status = "BOX BLUR ACTIVE"
-            status_color = (255, 200, 0)
-        else:
-            status = "Detecting hands..."
-            status_color = (200, 200, 200)
 
-        # Background kotak untuk teks status
-        cv2.rectangle(frame, (10, 10), (380, 45), (0, 0, 0), cv2.FILLED)
-        cv2.rectangle(frame, (10, 10), (380, 45), status_color, 1)
-        cv2.putText(frame, status, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, status_color, 2, cv2.LINE_AA)
-
-        # Tampilkan level bar jika blur, grayscale, atau heart aktif
-        active_level = max(blur_level, gray_level, heart_level)
-        if active_level > 0.01:
-            if heart_level > max(blur_level, gray_level):
-                label = "Love"
-                bar_color = (130, 100, 255)
-            elif gray_level > blur_level:
-                label = "Gray"
-                bar_color = (0, 180, 255)
-            else:
-                label = "Blur"
-                bar_color = (0, 180, 255)
-            pct = int(active_level * 100)
-            bar_w = int(active_level * 200)
-            cv2.rectangle(frame, (10, 55), (210, 80), (0, 0, 0), cv2.FILLED)
-            cv2.rectangle(frame, (10, 55), (10 + bar_w, 80), bar_color, cv2.FILLED)
-            cv2.rectangle(frame, (10, 55), (210, 80), (200, 200, 200), 1)
-            cv2.putText(frame, f"{label}: {pct}%", (220, 75), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         cv2.imshow('Gesture Camera - Full Edition', frame)
 
