@@ -11,6 +11,7 @@ from cvzone.HandTrackingModule import HandDetector
 #  2. Jempol & Telunjuk = Blur dalam kotak
 #  3. Segitiga △ (dua tangan) = Grayscale
 #  4. Love/Heart ❤️ (dua tangan) = Efek Hati
+#  5. Kotak □ (dua tangan terbuka) = Anime Filter
 # ==========================================
 
 def distance(p1, p2):
@@ -331,6 +332,144 @@ def is_heart_gesture(hands, detector):
     return False, None, 0
 
 
+# ==========================================
+#  Rectangle/Anime Gesture - Helper Functions
+# ==========================================
+
+def apply_anime_filter(roi):
+    """
+    Terapkan filter anime/kartun ke region of interest.
+    Teknik: bilateral filter + edge detection + color quantization.
+    Hasilnya seperti gambar anime/manga.
+    """
+    if roi.size == 0:
+        return roi
+
+    h_roi, w_roi = roi.shape[:2]
+    if h_roi < 10 or w_roi < 10:
+        return roi
+
+    # Step 1: Bilateral filter → kulit halus seperti anime
+    smooth = cv2.bilateralFilter(roi, 9, 75, 75)
+    smooth = cv2.bilateralFilter(smooth, 9, 75, 75)
+
+    # Step 2: Color quantization → warna flat seperti anime
+    div = 24
+    smooth = (smooth // div) * div + div // 2
+
+    # Step 3: Edge detection → garis tebal seperti manga
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.medianBlur(gray, 7)
+    edges = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=9, C=2
+    )
+    edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+
+    # Step 4: Gabungkan warna flat + garis tepi
+    cartoon = cv2.bitwise_and(smooth, edges_bgr)
+
+    # Step 5: Boost saturasi → warna vibrant ala anime
+    hsv = cv2.cvtColor(cartoon, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1].astype(np.float32) * 1.5, 0, 255).astype(np.uint8)
+    # Sedikit cerahkan
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2].astype(np.float32) * 1.1, 0, 255).astype(np.uint8)
+    cartoon = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    return cartoon
+
+
+def is_rectangle_gesture(hands, detector):
+    """
+    Deteksi gesture kotak/rectangle dari dua tangan.
+    Kedua tangan harus membuka semua jari (telapak terbuka).
+    Membentuk "frame" kotak dari posisi kedua tangan.
+
+    Returns: (detected: bool, rect_coords: tuple(x_min, y_min, x_max, y_max))
+    """
+    if len(hands) != 2:
+        return False, None
+
+    f1 = detector.fingersUp(hands[0])
+    f2 = detector.fingersUp(hands[1])
+
+    # Kedua tangan harus buka semua jari (open palm)
+    # Minimal 4 dari 5 jari harus UP di masing-masing tangan
+    if sum(f1) < 4 or sum(f2) < 4:
+        return False, None
+
+    lm1 = hands[0]["lmList"]
+    lm2 = hands[1]["lmList"]
+
+    # Kumpulkan semua titik ujung jari dari kedua tangan
+    tips_1 = [(lm1[i][0], lm1[i][1]) for i in [4, 8, 12, 16, 20]]
+    tips_2 = [(lm2[i][0], lm2[i][1]) for i in [4, 8, 12, 16, 20]]
+
+    # Tambah wrist untuk batas bawah yang lebih baik
+    all_points = tips_1 + tips_2 + [(lm1[0][0], lm1[0][1]), (lm2[0][0], lm2[0][1])]
+
+    all_x = [p[0] for p in all_points]
+    all_y = [p[1] for p in all_points]
+
+    x_min = min(all_x)
+    x_max = max(all_x)
+    y_min = min(all_y)
+    y_max = max(all_y)
+
+    # Pastikan kotak cukup besar
+    rect_w = x_max - x_min
+    rect_h = y_max - y_min
+    if rect_w < 80 or rect_h < 80:
+        return False, None
+
+    # Pastikan kedua tangan cukup berjauhan (bukan numpuk)
+    cx1 = sum(p[0] for p in tips_1) / len(tips_1)
+    cx2 = sum(p[0] for p in tips_2) / len(tips_2)
+    hand_separation = abs(cx1 - cx2)
+    if hand_separation < 60:
+        return False, None
+
+    return True, (x_min, y_min, x_max, y_max)
+
+
+def draw_anime_frame(frame, x_min, y_min, x_max, y_max, alpha=1.0):
+    """
+    Gambar border kotak bergaya anime/neon di sekitar area anime.
+    """
+    # Warna cyan-biru neon (BGR)
+    color_outer = (int(200 * alpha), int(180 * alpha), int(50 * alpha))
+    color_inner = (int(255 * alpha), int(255 * alpha), int(100 * alpha))
+    corner_color = (int(100 * alpha), int(255 * alpha), int(255 * alpha))
+
+    # Outer glow
+    cv2.rectangle(frame, (x_min - 2, y_min - 2), (x_max + 2, y_max + 2),
+                  color_outer, 3, cv2.LINE_AA)
+    # Inner line
+    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max),
+                  color_inner, 1, cv2.LINE_AA)
+
+    # Corner markers (L-shaped corners)
+    corner_len = min(25, (x_max - x_min) // 5, (y_max - y_min) // 5)
+    corners = [
+        (x_min, y_min),  # Top-left
+        (x_max, y_min),  # Top-right
+        (x_min, y_max),  # Bottom-left
+        (x_max, y_max),  # Bottom-right
+    ]
+    for i, (cx, cy) in enumerate(corners):
+        dx = corner_len if (i % 2 == 0) else -corner_len
+        dy = corner_len if (i < 2) else -corner_len
+        cv2.line(frame, (cx, cy), (cx + dx, cy), corner_color, 2, cv2.LINE_AA)
+        cv2.line(frame, (cx, cy), (cx, cy + dy), corner_color, 2, cv2.LINE_AA)
+
+    # Label "ANIME" di atas kotak
+    label_y = max(y_min - 8, 15)
+    cv2.putText(frame, "ANIME", (x_min, label_y), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, corner_color, 1, cv2.LINE_AA)
+
+
 def main():
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
@@ -347,6 +486,7 @@ def main():
     print("  - Jempol & Telunjuk : Blur Area Kotak")
     print("  - Segitiga △ (2 tangan) : Grayscale")
     print("  - Love ❤️ (2 tangan)   : Efek Hati")
+    print("  - Kotak □ (2 tangan buka) : Anime Filter")
     print("  Tekan 'Q' untuk keluar")
     print("=" * 50)
 
@@ -372,6 +512,11 @@ def main():
     love_confirmed = False    # Apakah sudah dikonfirmasi
     love_detecting = False    # Sedang dalam proses deteksi
 
+    # Anime rectangle state
+    anime_level = 0.0   # Smooth transition
+    anime_speed = 0.15
+    anime_rect = None    # (x_min, y_min, x_max, y_max)
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -392,6 +537,8 @@ def main():
         love_raw_detected = False   # Gesture terdeteksi frame ini (belum konfirmasi)
         love_center = None
         love_size = 0
+        rect_detected = False
+        rect_coords = None
 
         if hands:
             # Gambar landmark untuk setiap tangan yang terdeteksi
@@ -400,12 +547,17 @@ def main():
                 color = hand_colors[i % len(hand_colors)]
                 draw_hand_landmarks(frame, hand, color)
 
-            # --- Deteksi Love/Heart Gesture (prioritas tinggi, 2 tangan) ---
+            # --- Deteksi gesture 2 tangan ---
             if len(hands) == 2:
-                love_raw_detected, love_center, love_size = is_heart_gesture(hands, detector)
+                # Cek rectangle/anime dulu (kedua tangan buka semua jari)
+                rect_detected, rect_coords = is_rectangle_gesture(hands, detector)
+
+                # Kalau bukan rectangle, cek love
+                if not rect_detected:
+                    love_raw_detected, love_center, love_size = is_heart_gesture(hands, detector)
 
             # --- Gesture 1 tangan (ambil tangan pertama) ---
-            if not love_raw_detected:
+            if not love_raw_detected and not rect_detected:
                 hand1 = hands[0]
                 fingers = detector.fingersUp(hand1)
 
@@ -430,7 +582,7 @@ def main():
                         box_coords = (x_min, y_min, x_max, y_max)
 
                 # Deteksi segitiga: butuh 2 tangan
-                if len(hands) == 2 and not love_raw_detected:
+                if len(hands) == 2 and not love_raw_detected and not rect_detected:
                     lm1 = hands[0]["lmList"]
                     lm2 = hands[1]["lmList"]
 
@@ -615,6 +767,33 @@ def main():
         if len(heart_particles) > 200:
             heart_particles = heart_particles[-200:]
 
+        # 5. 🎌 Efek Anime (Rectangle - kedua tangan terbuka)
+        if rect_detected and rect_coords:
+            anime_level = min(1.0, anime_level + anime_speed)
+            anime_rect = rect_coords
+        else:
+            anime_level = max(0.0, anime_level - anime_speed * 0.5)
+
+        if anime_level > 0.01 and anime_rect:
+            ax_min, ay_min, ax_max, ay_max = anime_rect
+            # Clamp ke batas frame
+            ax_min = max(0, ax_min)
+            ay_min = max(0, ay_min)
+            ax_max = min(w, ax_max)
+            ay_max = min(h, ay_max)
+
+            if ax_max - ax_min > 10 and ay_max - ay_min > 10:
+                # Ambil ROI dan terapkan anime filter
+                roi = frame[ay_min:ay_max, ax_min:ax_max].copy()
+                anime_roi = apply_anime_filter(roi)
+
+                # Blend anime dengan original sesuai anime_level
+                blended = cv2.addWeighted(anime_roi, anime_level, roi, 1 - anime_level, 0)
+                frame[ay_min:ay_max, ax_min:ax_max] = blended
+
+                # Gambar frame kotak bergaya anime
+                draw_anime_frame(frame, ax_min, ay_min, ax_max, ay_max, anime_level)
+
         # Gambar segitiga jika terdeteksi
         if triangle_detected and triangle_pts:
             pts = triangle_pts
@@ -631,8 +810,6 @@ def main():
             for pt in pts:
                 cv2.circle(frame, pt, 10, (0, 255, 255), cv2.FILLED)
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
-
-
 
         cv2.imshow('Gesture Camera - Full Edition', frame)
 
