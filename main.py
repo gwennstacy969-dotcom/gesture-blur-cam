@@ -1,5 +1,7 @@
 import cv2
 import math
+import time
+import random
 import numpy as np
 from cvzone.HandTrackingModule import HandDetector
 
@@ -8,6 +10,7 @@ from cvzone.HandTrackingModule import HandDetector
 #  1. Peace Sign (✌️) = Blur Seluruh Layar
 #  2. Jempol & Telunjuk = Blur dalam kotak
 #  3. Segitiga △ (dua tangan) = Grayscale
+#  4. Love/Heart ❤️ (dua tangan) = Efek Hati
 # ==========================================
 
 def distance(p1, p2):
@@ -80,13 +83,261 @@ def draw_hand_landmarks(frame, hand, color=(0, 255, 150)):
             cv2.circle(frame, (x, y), 4, color, cv2.FILLED)
 
 
+# ==========================================
+#  Heart/Love Gesture - Helper Functions
+# ==========================================
+
+def generate_heart_points(cx, cy, size, num_points=100):
+    """
+    Generate titik-titik membentuk hati menggunakan persamaan parametrik.
+    Hati menghadap ke atas (seperti emoji ❤️).
+    """
+    points = []
+    for i in range(num_points):
+        t = 2 * math.pi * i / num_points
+        # Persamaan parametrik hati
+        x = 16 * (math.sin(t) ** 3)
+        y = -(13 * math.cos(t) - 5 * math.cos(2*t) - 2 * math.cos(3*t) - math.cos(4*t))
+        # Scale dan posisi
+        px = int(cx + x * size / 17)
+        py = int(cy + y * size / 17)
+        points.append((px, py))
+    return points
+
+def draw_glowing_heart(frame, cx, cy, size, alpha=1.0, pulse=0.0):
+    """
+    Gambar hati bersinar dengan efek glow berlapis.
+    pulse: 0.0-1.0 untuk efek denyut (pulsing).
+    """
+    overlay = frame.copy()
+    pulse_size = size + int(pulse * size * 0.15)
+
+    # Warna-warna hati (BGR): dari luar ke dalam semakin terang
+    layers = [
+        (pulse_size + 12, (40, 20, 120), 5),     # Outer glow - gelap
+        (pulse_size + 8,  (60, 40, 180), 4),      # Mid glow
+        (pulse_size + 4,  (80, 50, 220), 3),      # Inner glow
+        (pulse_size,      (100, 80, 255), 2),      # Core - merah terang
+        (pulse_size - 3,  (180, 130, 255), 2),     # Highlight - pink
+    ]
+
+    for lsize, color, thickness in layers:
+        pts = generate_heart_points(cx, cy, lsize, num_points=120)
+        if len(pts) >= 3:
+            pts_array = np.array(pts, dtype=np.int32)
+            cv2.polylines(overlay, [pts_array], True, color, thickness, cv2.LINE_AA)
+
+    # Fill hati dengan warna semi-transparan
+    fill_pts = generate_heart_points(cx, cy, pulse_size - 2, num_points=120)
+    if len(fill_pts) >= 3:
+        fill_array = np.array(fill_pts, dtype=np.int32)
+        cv2.fillPoly(overlay, [fill_array], (80, 50, 200))
+
+    # Blend overlay ke frame
+    blend_alpha = 0.4 * alpha
+    cv2.addWeighted(overlay, blend_alpha, frame, 1 - blend_alpha, 0, frame)
+
+    # Gambar garis hati terang di atas (agar terlihat jelas)
+    bright_pts = generate_heart_points(cx, cy, pulse_size, num_points=120)
+    if len(bright_pts) >= 3:
+        bright_array = np.array(bright_pts, dtype=np.int32)
+        cv2.polylines(frame, [bright_array], True, (130, 100, 255), 2, cv2.LINE_AA)
+
+    # Highlight kecil di bagian atas kiri hati (seperti pantulan cahaya)
+    highlight_cx = cx - int(pulse_size * 0.25)
+    highlight_cy = cy - int(pulse_size * 0.15)
+    cv2.circle(frame, (highlight_cx, highlight_cy), max(2, int(pulse_size * 0.08)),
+               (220, 200, 255), cv2.FILLED, cv2.LINE_AA)
+
+
+class HeartParticle:
+    """Partikel hati kecil yang melayang ke atas."""
+    def __init__(self, x, y, frame_w, frame_h):
+        self.x = float(x + random.randint(-40, 40))
+        self.y = float(y + random.randint(-20, 20))
+        self.vx = random.uniform(-1.5, 1.5)
+        self.vy = random.uniform(-3.0, -1.0)
+        self.life = 1.0  # 1.0 = baru lahir, 0.0 = mati
+        self.decay = random.uniform(0.008, 0.02)
+        self.size = random.randint(4, 12)
+        self.frame_w = frame_w
+        self.frame_h = frame_h
+        # Variasi warna merah-pink (BGR)
+        self.color = (
+            random.randint(80, 180),   # B
+            random.randint(50, 120),   # G
+            random.randint(200, 255),  # R
+        )
+        self.is_sparkle = random.random() < 0.3  # 30% jadi sparkle
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy -= 0.02  # sedikit percepatan ke atas
+        self.vx *= 0.99  # perlambatan horizontal
+        self.life -= self.decay
+        self.size = max(1, int(self.size * (0.98 + self.life * 0.01)))
+
+    def is_alive(self):
+        return self.life > 0 and 0 <= self.x < self.frame_w and 0 <= self.y < self.frame_h
+
+    def draw(self, frame):
+        alpha = max(0.0, min(1.0, self.life))
+        ix, iy = int(self.x), int(self.y)
+
+        if self.is_sparkle:
+            # Sparkle: bintang kecil berkilau
+            spark_size = max(1, int(self.size * alpha))
+            # Garis silang
+            c = (
+                int(self.color[0] * alpha + 255 * (1 - alpha)),
+                int(self.color[1] * alpha + 255 * (1 - alpha)),
+                int(self.color[2] * alpha),
+            )
+            cv2.line(frame, (ix - spark_size, iy), (ix + spark_size, iy), c, 1, cv2.LINE_AA)
+            cv2.line(frame, (ix, iy - spark_size), (ix, iy + spark_size), c, 1, cv2.LINE_AA)
+            # Diagonal
+            d = max(1, spark_size // 2)
+            cv2.line(frame, (ix - d, iy - d), (ix + d, iy + d), c, 1, cv2.LINE_AA)
+            cv2.line(frame, (ix - d, iy + d), (ix + d, iy - d), c, 1, cv2.LINE_AA)
+            # Titik tengah terang
+            cv2.circle(frame, (ix, iy), max(1, spark_size // 3), (255, 255, 255), cv2.FILLED)
+        else:
+            # Mini heart
+            s = max(2, int(self.size * alpha))
+            pts = generate_heart_points(ix, iy, s, num_points=30)
+            if len(pts) >= 3:
+                pts_array = np.array(pts, dtype=np.int32)
+                fill_color = (
+                    int(self.color[0] * alpha),
+                    int(self.color[1] * alpha),
+                    int(self.color[2] * alpha),
+                )
+                cv2.fillPoly(frame, [pts_array], fill_color)
+                # Outline tipis
+                outline_color = (
+                    min(255, int(fill_color[0] + 60)),
+                    min(255, int(fill_color[1] + 60)),
+                    min(255, int(fill_color[2] + 30)),
+                )
+                cv2.polylines(frame, [pts_array], True, outline_color, 1, cv2.LINE_AA)
+
+
+def draw_heart_vignette(frame, alpha=0.3):
+    """Tambah vignette merah/pink di pinggir frame saat love gesture aktif."""
+    h, w = frame.shape[:2]
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+
+    # Gradient dari pinggir (merah gelap) ke tengah (transparan)
+    for i in range(min(80, h // 4)):
+        intensity = int(60 * (1 - i / 80) * alpha)
+        color = (max(0, intensity // 3), 0, max(0, intensity))
+        # Atas
+        cv2.line(overlay, (0, i), (w, i), color, 1)
+        # Bawah
+        cv2.line(overlay, (0, h - 1 - i), (w, h - 1 - i), color, 1)
+        # Kiri
+        cv2.line(overlay, (i, 0), (i, h), color, 1)
+        # Kanan
+        cv2.line(overlay, (w - 1 - i, 0), (w - 1 - i, h), color, 1)
+
+    cv2.add(frame, overlay, frame)
+
+
+def is_heart_gesture(hands, detector):
+    """
+    Deteksi gesture hati/love dari dua tangan.
+    Hati dibentuk dengan:
+    - Kedua ujung telunjuk saling bertemu di atas (puncak hati)
+    - Kedua ujung jempol saling bertemu di bawah (dasar hati)
+    ATAU sebaliknya.
+    Jari-jari lain (tengah, manis, kelingking) harus menekuk.
+
+    Returns: (detected: bool, center: tuple, size: int)
+    """
+    if len(hands) != 2:
+        return False, None, 0
+
+    lm1 = hands[0]["lmList"]
+    lm2 = hands[1]["lmList"]
+
+    # Ujung jari kedua tangan
+    thumb1 = (lm1[4][0], lm1[4][1])
+    index1 = (lm1[8][0], lm1[8][1])
+    thumb2 = (lm2[4][0], lm2[4][1])
+    index2 = (lm2[8][0], lm2[8][1])
+
+    # Pangkal jari (wrist) untuk menentukan orientasi
+    wrist1 = (lm1[0][0], lm1[0][1])
+    wrist2 = (lm2[0][0], lm2[0][1])
+
+    # Cek jari-jari lain menekuk (tengah, manis, kelingking)
+    f1 = detector.fingersUp(hands[0])
+    f2 = detector.fingersUp(hands[1])
+
+    # Untuk love gesture: telunjuk & jempol bisa UP, sisanya DOWN
+    # f1/f2 = [thumb, index, middle, ring, pinky]
+    other_fingers_down_1 = (f1[2] == 0 and f1[3] == 0 and f1[4] == 0)
+    other_fingers_down_2 = (f2[2] == 0 and f2[3] == 0 and f2[4] == 0)
+
+    if not (other_fingers_down_1 and other_fingers_down_2):
+        return False, None, 0
+
+    thresh = 80  # Jarak ujung jari harus dekat
+
+    # Skenario 1: Telunjuk bertemu di atas, Jempol bertemu di bawah
+    index_dist = distance(index1, index2)
+    thumb_dist = distance(thumb1, thumb2)
+
+    if index_dist < thresh and thumb_dist < thresh:
+        # Titik pertemuan
+        top = ((index1[0] + index2[0]) // 2, (index1[1] + index2[1]) // 2)
+        bottom = ((thumb1[0] + thumb2[0]) // 2, (thumb1[1] + thumb2[1]) // 2)
+
+        # Center dan ukuran hati
+        cx = (top[0] + bottom[0]) // 2
+        cy = (top[1] + bottom[1]) // 2
+        heart_size = max(30, int(distance(top, bottom) * 0.7))
+
+        return True, (cx, cy), heart_size
+
+    # Skenario 2: Jempol bertemu di atas, Telunjuk bertemu di bawah
+    if thumb_dist < thresh and index_dist < thresh * 1.5:
+        top = ((thumb1[0] + thumb2[0]) // 2, (thumb1[1] + thumb2[1]) // 2)
+        bottom = ((index1[0] + index2[0]) // 2, (index1[1] + index2[1]) // 2)
+
+        cx = (top[0] + bottom[0]) // 2
+        cy = (top[1] + bottom[1]) // 2
+        heart_size = max(30, int(distance(top, bottom) * 0.7))
+
+        return True, (cx, cy), heart_size
+
+    # Skenario 3: Ujung telunjuk 1 dekat ujung jempol 2 DAN sebaliknya
+    # (bentuk hati alternatif)
+    cross_dist_1 = distance(index1, thumb2)
+    cross_dist_2 = distance(index2, thumb1)
+
+    if cross_dist_1 < thresh and cross_dist_2 < thresh:
+        # Titik pertemuan atas dan bawah
+        top1 = ((index1[0] + thumb2[0]) // 2, (index1[1] + thumb2[1]) // 2)
+        top2 = ((index2[0] + thumb1[0]) // 2, (index2[1] + thumb1[1]) // 2)
+
+        cx = (top1[0] + top2[0]) // 2
+        cy = (top1[1] + top2[1]) // 2
+        heart_size = max(30, int(distance(top1, top2) * 0.8))
+
+        return True, (cx, cy), heart_size
+
+    return False, None, 0
+
+
 def main():
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print("ERROR: Kamera tidak bisa dibuka!")
         return
 
-    # Detektor tangan: butuh 2 tangan untuk gesture segitiga
+    # Detektor tangan: butuh 2 tangan untuk gesture segitiga & love
     detector = HandDetector(detectionCon=0.7, maxHands=2)
 
     print("=" * 50)
@@ -95,6 +346,7 @@ def main():
     print("  - Peace Sign (V) : Blur Full Screen")
     print("  - Jempol & Telunjuk : Blur Area Kotak")
     print("  - Segitiga △ (2 tangan) : Grayscale")
+    print("  - Love ❤️ (2 tangan)   : Efek Hati")
     print("  Tekan 'Q' untuk keluar")
     print("=" * 50)
 
@@ -105,6 +357,15 @@ def main():
     gray_level = 0.0
     gray_speed = 0.12
 
+    # Heart effect state
+    heart_level = 0.0     # 0.0 = off, 1.0 = fully on
+    heart_speed = 0.1
+    heart_particles = []  # List partikel hati
+    heart_pulse_time = 0  # Untuk animasi denyut
+    heart_spawn_timer = 0
+    heart_center = (0, 0)
+    heart_size = 50
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -112,6 +373,7 @@ def main():
 
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
+        current_time = time.time()
 
         # Deteksi tangan (draw=False, kita gambar sendiri biar lebih bagus)
         hands, frame = detector.findHands(frame, draw=False)
@@ -121,6 +383,9 @@ def main():
         box_coords = None
         triangle_detected = False
         triangle_pts = None
+        love_detected = False
+        love_center = None
+        love_size = 0
 
         if hands:
             # Gambar landmark untuk setiap tangan yang terdeteksi
@@ -129,71 +394,76 @@ def main():
                 color = hand_colors[i % len(hand_colors)]
                 draw_hand_landmarks(frame, hand, color)
 
-            # --- Gesture 1 tangan (ambil tangan pertama) ---
-            hand1 = hands[0]
-            fingers = detector.fingersUp(hand1)
-
-            # LOGIKA 1: Peace Sign (Telunjuk & Tengah UP) → Blur full screen
-            if fingers == [0, 1, 1, 0, 0] or fingers == [1, 1, 1, 0, 0]:
-                peace_detected = True
-
-            # LOGIKA 2: Jempol & Telunjuk saja UP → Blur area kotak
-            elif fingers == [1, 1, 0, 0, 0]:
-                box_blur_detected = True
-                lmList = hand1["lmList"]
-
-                # Ujung jempol (id:4) dan ujung telunjuk (id:8)
-                x1, y1 = lmList[4][0], lmList[4][1]
-                x2, y2 = lmList[8][0], lmList[8][1]
-
-                # Bounding box
-                x_min, x_max = max(0, min(x1, x2)), min(w, max(x1, x2))
-                y_min, y_max = max(0, min(y1, y2)), min(h, max(y1, y2))
-
-                if x_max - x_min > 20 and y_max - y_min > 20:
-                    box_coords = (x_min, y_min, x_max, y_max)
-
-            # Deteksi segitiga: butuh 2 tangan
+            # --- Deteksi Love/Heart Gesture (prioritas tinggi, 2 tangan) ---
             if len(hands) == 2:
-                lm1 = hands[0]["lmList"]
-                lm2 = hands[1]["lmList"]
+                love_detected, love_center, love_size = is_heart_gesture(hands, detector)
 
-                # Ujung jempol (id:4) dan ujung telunjuk (id:8) dari masing-masing tangan
-                thumb1 = (lm1[4][0], lm1[4][1])
-                index1 = (lm1[8][0], lm1[8][1])
-                thumb2 = (lm2[4][0], lm2[4][1])
-                index2 = (lm2[8][0], lm2[8][1])
+            # --- Gesture 1 tangan (ambil tangan pertama) ---
+            if not love_detected:
+                hand1 = hands[0]
+                fingers = detector.fingersUp(hand1)
 
-                # Cek apakah ujung jempol kedua tangan saling dekat (membentuk puncak)
-                # dan ujung telunjuk kedua tangan saling dekat (membentuk puncak)
-                # Skenario: tangan kiri & kanan membentuk segitiga
-                #   - Jempol1 dekat Jempol2 → satu titik sudut
-                #   - Telunjuk1 & Telunjuk2 → dua titik sudut lainnya
+                # LOGIKA 1: Peace Sign (Telunjuk & Tengah UP) → Blur full screen
+                if fingers == [0, 1, 1, 0, 0] or fingers == [1, 1, 1, 0, 0]:
+                    peace_detected = True
 
-                thumb_dist = distance(thumb1, thumb2)
-                thresh = 60  # Jarak maksimal ujung jempol berdekatan
+                # LOGIKA 2: Jempol & Telunjuk saja UP → Blur area kotak
+                elif fingers == [1, 1, 0, 0, 0]:
+                    box_blur_detected = True
+                    lmList = hand1["lmList"]
 
-                if thumb_dist < thresh:
-                    # Puncak segitiga = titik tengah kedua jempol
-                    top = ((thumb1[0] + thumb2[0]) // 2, (thumb1[1] + thumb2[1]) // 2)
-                    # Dua titik bawah = ujung telunjuk masing-masing tangan
-                    bottom_left = index1
-                    bottom_right = index2
+                    # Ujung jempol (id:4) dan ujung telunjuk (id:8)
+                    x1, y1 = lmList[4][0], lmList[4][1]
+                    x2, y2 = lmList[8][0], lmList[8][1]
 
-                    if is_triangle(top, bottom_left, bottom_right, min_side=50):
-                        triangle_detected = True
-                        triangle_pts = (top, bottom_left, bottom_right)
+                    # Bounding box
+                    x_min, x_max = max(0, min(x1, x2)), min(w, max(x1, x2))
+                    y_min, y_max = max(0, min(y1, y2)), min(h, max(y1, y2))
 
-                # Alternatif: Telunjuk1 dekat Telunjuk2 → puncak, Jempol = basis
-                index_dist = distance(index1, index2)
-                if not triangle_detected and index_dist < thresh:
-                    top = ((index1[0] + index2[0]) // 2, (index1[1] + index2[1]) // 2)
-                    bottom_left = thumb1
-                    bottom_right = thumb2
+                    if x_max - x_min > 20 and y_max - y_min > 20:
+                        box_coords = (x_min, y_min, x_max, y_max)
 
-                    if is_triangle(top, bottom_left, bottom_right, min_side=50):
-                        triangle_detected = True
-                        triangle_pts = (top, bottom_left, bottom_right)
+                # Deteksi segitiga: butuh 2 tangan
+                if len(hands) == 2 and not love_detected:
+                    lm1 = hands[0]["lmList"]
+                    lm2 = hands[1]["lmList"]
+
+                    # Ujung jempol (id:4) dan ujung telunjuk (id:8) dari masing-masing tangan
+                    thumb1 = (lm1[4][0], lm1[4][1])
+                    index1 = (lm1[8][0], lm1[8][1])
+                    thumb2 = (lm2[4][0], lm2[4][1])
+                    index2 = (lm2[8][0], lm2[8][1])
+
+                    # Cek apakah ujung jempol kedua tangan saling dekat (membentuk puncak)
+                    # dan ujung telunjuk kedua tangan saling dekat (membentuk puncak)
+                    # Skenario: tangan kiri & kanan membentuk segitiga
+                    #   - Jempol1 dekat Jempol2 → satu titik sudut
+                    #   - Telunjuk1 & Telunjuk2 → dua titik sudut lainnya
+
+                    thumb_dist = distance(thumb1, thumb2)
+                    thresh = 60  # Jarak maksimal ujung jempol berdekatan
+
+                    if thumb_dist < thresh:
+                        # Puncak segitiga = titik tengah kedua jempol
+                        top = ((thumb1[0] + thumb2[0]) // 2, (thumb1[1] + thumb2[1]) // 2)
+                        # Dua titik bawah = ujung telunjuk masing-masing tangan
+                        bottom_left = index1
+                        bottom_right = index2
+
+                        if is_triangle(top, bottom_left, bottom_right, min_side=50):
+                            triangle_detected = True
+                            triangle_pts = (top, bottom_left, bottom_right)
+
+                    # Alternatif: Telunjuk1 dekat Telunjuk2 → puncak, Jempol = basis
+                    index_dist = distance(index1, index2)
+                    if not triangle_detected and index_dist < thresh:
+                        top = ((index1[0] + index2[0]) // 2, (index1[1] + index2[1]) // 2)
+                        bottom_left = thumb1
+                        bottom_right = thumb2
+
+                        if is_triangle(top, bottom_left, bottom_right, min_side=50):
+                            triangle_detected = True
+                            triangle_pts = (top, bottom_left, bottom_right)
 
         # ====================================================
         # EKSEKUSI EFEK VISUAL
@@ -231,6 +501,61 @@ def main():
             gray_bgr = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
             frame = cv2.addWeighted(gray_bgr, gray_level, frame, 1 - gray_level, 0)
 
+        # 4. ❤️ Efek Love/Heart
+        if love_detected:
+            heart_level = min(1.0, heart_level + heart_speed)
+            heart_center = love_center
+            heart_size = love_size
+        else:
+            heart_level = max(0.0, heart_level - heart_speed * 0.5)
+
+        if heart_level > 0.01:
+            # Efek vignette merah/pink di pinggir layar
+            draw_heart_vignette(frame, alpha=heart_level * 0.6)
+
+            # Animasi denyut hati (pulsing)
+            heart_pulse_time += 0.15
+            pulse = (math.sin(heart_pulse_time) + 1) / 2  # 0.0 - 1.0
+
+            # Gambar hati utama bersinar
+            draw_glowing_heart(frame, heart_center[0], heart_center[1],
+                             heart_size, alpha=heart_level, pulse=pulse)
+
+            # Spawn partikel baru
+            heart_spawn_timer += 1
+            if heart_spawn_timer >= 2:  # Setiap 2 frame
+                heart_spawn_timer = 0
+                num_new = random.randint(1, 3)
+                for _ in range(num_new):
+                    heart_particles.append(
+                        HeartParticle(heart_center[0], heart_center[1], w, h)
+                    )
+
+            # Tambah sparkles di sekitar hati utama
+            if random.random() < 0.4:
+                angle = random.uniform(0, 2 * math.pi)
+                sparkle_r = heart_size + random.randint(5, 25)
+                sx = int(heart_center[0] + sparkle_r * math.cos(angle))
+                sy = int(heart_center[1] + sparkle_r * math.sin(angle))
+                p = HeartParticle(sx, sy, w, h)
+                p.is_sparkle = True
+                p.size = random.randint(3, 8)
+                p.decay = random.uniform(0.02, 0.05)
+                heart_particles.append(p)
+
+        # Update dan gambar semua partikel
+        alive_particles = []
+        for p in heart_particles:
+            p.update()
+            if p.is_alive():
+                p.draw(frame)
+                alive_particles.append(p)
+        heart_particles = alive_particles
+
+        # Batasi jumlah partikel agar performa tetap oke
+        if len(heart_particles) > 150:
+            heart_particles = heart_particles[-150:]
+
         # Gambar segitiga jika terdeteksi
         if triangle_detected and triangle_pts:
             pts = triangle_pts
@@ -249,7 +574,10 @@ def main():
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
 
         # Status overlay di pojok kiri atas
-        if triangle_detected:
+        if love_detected:
+            status = "LOVE HEART -> EFFECTS"
+            status_color = (130, 100, 255)  # Pink/merah
+        elif triangle_detected:
             status = "TRIANGLE -> GRAYSCALE"
             status_color = (0, 255, 255)
         elif peace_detected:
@@ -263,19 +591,27 @@ def main():
             status_color = (200, 200, 200)
 
         # Background kotak untuk teks status
-        cv2.rectangle(frame, (10, 10), (350, 45), (0, 0, 0), cv2.FILLED)
-        cv2.rectangle(frame, (10, 10), (350, 45), status_color, 1)
+        cv2.rectangle(frame, (10, 10), (380, 45), (0, 0, 0), cv2.FILLED)
+        cv2.rectangle(frame, (10, 10), (380, 45), status_color, 1)
         cv2.putText(frame, status, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, status_color, 2, cv2.LINE_AA)
 
-        # Tampilkan level bar jika blur atau grayscale aktif
-        active_level = max(blur_level, gray_level)
+        # Tampilkan level bar jika blur, grayscale, atau heart aktif
+        active_level = max(blur_level, gray_level, heart_level)
         if active_level > 0.01:
-            label = "Gray" if gray_level > blur_level else "Blur"
+            if heart_level > max(blur_level, gray_level):
+                label = "Love"
+                bar_color = (130, 100, 255)
+            elif gray_level > blur_level:
+                label = "Gray"
+                bar_color = (0, 180, 255)
+            else:
+                label = "Blur"
+                bar_color = (0, 180, 255)
             pct = int(active_level * 100)
             bar_w = int(active_level * 200)
             cv2.rectangle(frame, (10, 55), (210, 80), (0, 0, 0), cv2.FILLED)
-            cv2.rectangle(frame, (10, 55), (10 + bar_w, 80), (0, 180, 255), cv2.FILLED)
+            cv2.rectangle(frame, (10, 55), (10 + bar_w, 80), bar_color, cv2.FILLED)
             cv2.rectangle(frame, (10, 55), (210, 80), (200, 200, 200), 1)
             cv2.putText(frame, f"{label}: {pct}%", (220, 75), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (200, 200, 200), 1, cv2.LINE_AA)
