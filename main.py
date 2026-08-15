@@ -6,12 +6,19 @@ import numpy as np
 from cvzone.HandTrackingModule import HandDetector
 
 # ==========================================
-#  Gesture Camera - Full Edition
-#  1. Peace Sign (✌️) = Blur Seluruh Layar
+#  Gesture Camera - Ultimate Edition (10 Gestures)
+#  --- 1 Tangan ---
+#  1. Peace Sign (V) = Blur Seluruh Layar
 #  2. Jempol & Telunjuk = Blur dalam kotak
-#  3. Segitiga △ (dua tangan) = Grayscale
-#  4. Love/Heart ❤️ (dua tangan) = Efek Hati
-#  5. Kotak □ (dua tangan terbuka) = Anime Filter
+#  3. Rock Sign (Telunjuk+Kelingking) = Glitch/VHS
+#  4. Telunjuk Saja = Spotlight
+#  5. Kelingking Saja = Color Invert
+#  6. Kepalan Tangan = Night Vision
+#  7. Telapak Terbuka (1 tangan) = Freeze Frame
+#  --- 2 Tangan ---
+#  8. Segitiga △ (dua tangan) = Grayscale
+#  9. Love/Heart ❤️ (dua tangan) = Efek Hati
+# 10. Kotak □ (dua tangan terbuka) = Anime Filter
 # ==========================================
 
 def distance(p1, p2):
@@ -470,6 +477,256 @@ def draw_anime_frame(frame, x_min, y_min, x_max, y_max, alpha=1.0):
                 0.5, corner_color, 1, cv2.LINE_AA)
 
 
+# ==========================================
+#  Night Vision Effect
+# ==========================================
+
+def apply_night_vision(frame, level):
+    """Efek night vision hijau ala militer dengan scanline dan noise grain."""
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+
+    # Convert ke grayscale dan boost brightness
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = np.clip(gray.astype(np.float32) * 1.3 + 10, 0, 255).astype(np.uint8)
+
+    # Buat frame night vision (dominan hijau)
+    night = np.zeros_like(frame)
+    night[:, :, 0] = (gray * 0.05).astype(np.uint8)   # Blue minimal
+    night[:, :, 1] = gray                               # Green dominan
+    night[:, :, 2] = (gray * 0.08).astype(np.uint8)    # Red minimal
+
+    # Noise grain
+    noise = np.random.randint(0, 25, (h, w), dtype=np.uint8)
+    night[:, :, 1] = np.clip(night[:, :, 1].astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+    # Scanlines (setiap baris genap jadi lebih gelap)
+    night[::2, :] = (night[::2, :].astype(np.float32) * 0.75).astype(np.uint8)
+
+    # Vignette gelap di pinggir
+    cx_v, cy_v = w // 2, h // 2
+    Y, X = np.ogrid[:h, :w]
+    max_dist = math.sqrt(cx_v**2 + cy_v**2)
+    dist = np.sqrt((X.astype(np.float32) - cx_v)**2 + (Y.astype(np.float32) - cy_v)**2)
+    vignette = np.clip(1.0 - (dist / max_dist) * 0.7, 0.3, 1.0).astype(np.float32)
+    for c in range(3):
+        night[:, :, c] = (night[:, :, c].astype(np.float32) * vignette).astype(np.uint8)
+
+    # Blend
+    return cv2.addWeighted(night, level, frame, 1 - level, 0)
+
+
+def draw_night_vision_hud(frame, level):
+    """Gambar HUD overlay night vision: crosshair, corner brackets, text."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+    color = (0, int(200 * alpha), 0)
+
+    # Corner brackets
+    blen = 30
+    corners = [
+        ((10, 10), (10 + blen, 10), (10, 10 + blen)),
+        ((w - 10, 10), (w - 10 - blen, 10), (w - 10, 10 + blen)),
+        ((10, h - 10), (10 + blen, h - 10), (10, h - 10 - blen)),
+        ((w - 10, h - 10), (w - 10 - blen, h - 10), (w - 10, h - 10 - blen)),
+    ]
+    for corner, h_end, v_end in corners:
+        cv2.line(frame, corner, h_end, color, 1, cv2.LINE_AA)
+        cv2.line(frame, corner, v_end, color, 1, cv2.LINE_AA)
+
+    # Crosshair di tengah
+    cx, cy = w // 2, h // 2
+    csize = 15
+    cv2.line(frame, (cx - csize, cy), (cx + csize, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - csize), (cx, cy + csize), color, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), csize + 5, color, 1, cv2.LINE_AA)
+
+    # Labels
+    cv2.putText(frame, "NV MODE", (15, h - 20), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, color, 1, cv2.LINE_AA)
+    time_str = time.strftime("%H:%M:%S")
+    cv2.putText(frame, time_str, (w - 110, h - 20), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, color, 1, cv2.LINE_AA)
+
+
+# ==========================================
+#  Glitch / VHS Effect
+# ==========================================
+
+def apply_glitch_effect(frame, level):
+    """Efek glitch/VHS retro: RGB split, horizontal bars, scanlines."""
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    result = frame.copy()
+
+    # RGB channel split (chromatic aberration)
+    shift = max(1, int(level * random.randint(5, 15)))
+    if shift < w:
+        # Red channel geser kanan
+        result[:, shift:, 2] = frame[:, :w - shift, 2]
+        result[:, :shift, 2] = 0
+        # Blue channel geser kiri
+        result[:, :w - shift, 0] = frame[:, shift:, 0]
+        result[:, w - shift:, 0] = 0
+
+    # Random horizontal displacement bars
+    num_bars = int(level * random.randint(3, 8))
+    for _ in range(num_bars):
+        y_start = random.randint(0, h - 1)
+        bar_h = random.randint(2, max(3, int(15 * level)))
+        y_end = min(y_start + bar_h, h)
+        shift_x = random.randint(int(-25 * level), int(25 * level))
+        if shift_x > 0 and shift_x < w:
+            result[y_start:y_end, shift_x:] = frame[y_start:y_end, :w - shift_x]
+        elif shift_x < 0 and abs(shift_x) < w:
+            result[y_start:y_end, :w + shift_x] = frame[y_start:y_end, -shift_x:]
+
+    # VHS scanlines
+    result[::3, :] = (result[::3, :].astype(np.float32) * 0.85).astype(np.uint8)
+
+    # Random color tint flicker
+    if random.random() < 0.3 * level:
+        tint = np.zeros_like(result)
+        tint[:, :] = (random.randint(0, 20), 0, random.randint(0, 25))
+        result = cv2.add(result, tint)
+
+    # Random horizontal white noise bar
+    if random.random() < 0.4 * level:
+        y_noise = random.randint(0, h - 3)
+        noise_h = random.randint(1, 4)
+        y_end_n = min(y_noise + noise_h, h)
+        noise_bar = np.random.randint(0, 255, (y_end_n - y_noise, w, 3), dtype=np.uint8)
+        alpha_noise = 0.3 * level
+        result[y_noise:y_end_n] = cv2.addWeighted(
+            noise_bar, alpha_noise, result[y_noise:y_end_n], 1 - alpha_noise, 0
+        )
+
+    return cv2.addWeighted(result, level, frame, 1 - level, 0)
+
+
+def draw_glitch_hud(frame, level):
+    """Gambar overlay VHS-style: REC indicator, timestamp."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+
+    # "REC" indicator dengan titik merah berkedip
+    rec_color = (0, 0, int(255 * alpha))
+    txt_color = (int(200 * alpha), int(200 * alpha), int(200 * alpha))
+    cv2.circle(frame, (25, 25), 6, rec_color, cv2.FILLED)
+    cv2.putText(frame, "REC", (38, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, txt_color, 1, cv2.LINE_AA)
+
+    # "PLAY" di pojok kanan atas
+    cv2.putText(frame, "PLAY >>", (w - 110, 25), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, txt_color, 1, cv2.LINE_AA)
+
+    # VHS timestamp di bawah
+    time_str = time.strftime("%Y/%m/%d  %H:%M:%S")
+    ts_color = (int(200 * alpha), int(200 * alpha), int(80 * alpha))
+    cv2.putText(frame, time_str, (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, ts_color, 1, cv2.LINE_AA)
+
+
+# ==========================================
+#  Spotlight Effect
+# ==========================================
+
+def apply_spotlight(frame, cx, cy, radius, level):
+    """Efek spotlight: area terang mengikuti posisi jari, sisanya gelap."""
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+
+    # Buat frame gelap
+    dark = (frame.astype(np.float32) * 0.12).astype(np.uint8)
+
+    # Buat mask gradien lingkaran
+    Y, X = np.ogrid[:h, :w]
+    dist = np.sqrt((X.astype(np.float32) - cx)**2 + (Y.astype(np.float32) - cy)**2)
+
+    # Smooth falloff
+    mask = np.clip(1.0 - (dist / max(1, radius)), 0, 1).astype(np.float32)
+    mask = mask ** 1.5  # Smooth edge
+    mask_3ch = np.stack([mask, mask, mask], axis=-1)
+
+    # Blend: terang di tengah, gelap di luar
+    spotlight = (frame.astype(np.float32) * mask_3ch +
+                 dark.astype(np.float32) * (1 - mask_3ch)).astype(np.uint8)
+
+    # Blend dengan original sesuai level
+    return cv2.addWeighted(spotlight, level, frame, 1 - level, 0)
+
+
+def draw_spotlight_ring(frame, cx, cy, radius, level):
+    """Gambar ring terang di sekitar spotlight."""
+    if level < 0.3:
+        return
+    alpha = min(1.0, level)
+    color = (int(200 * alpha), int(200 * alpha), int(100 * alpha))
+    dim_color = (int(100 * alpha), int(100 * alpha), int(50 * alpha))
+    cv2.circle(frame, (cx, cy), radius, color, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), radius + 3, dim_color, 1, cv2.LINE_AA)
+    # Crosshair kecil
+    csize = 8
+    cv2.line(frame, (cx - csize, cy), (cx + csize, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - csize), (cx, cy + csize), color, 1, cv2.LINE_AA)
+    # Label
+    cv2.putText(frame, "SPOTLIGHT", (cx - 35, cy - radius - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+
+# ==========================================
+#  Color Invert / Negative Effect
+# ==========================================
+
+def apply_color_invert(frame, level):
+    """Inversi warna (efek negatif) dengan scanline ala film."""
+    if level <= 0:
+        return frame
+
+    # Invert warna
+    inverted = cv2.bitwise_not(frame)
+
+    # Blend
+    result = cv2.addWeighted(inverted, level, frame, 1 - level, 0)
+
+    # Scanlines tipis ala film negatif
+    if level > 0.3:
+        result[::4, :] = (result[::4, :].astype(np.float32) *
+                          (0.85 + 0.15 * (1 - level))).astype(np.uint8)
+
+    return result
+
+
+def draw_invert_border(frame, level):
+    """Gambar border film negatif dengan perforasi."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+    color = (int(180 * alpha), int(120 * alpha), int(255 * alpha))
+
+    # Border tipis
+    cv2.rectangle(frame, (5, 5), (w - 5, h - 5), color, 1, cv2.LINE_AA)
+
+    # Film perforations (lubang film) di kiri dan kanan
+    perf_size = 6
+    perf_gap = 25
+    for y in range(15, h - 15, perf_gap):
+        cv2.rectangle(frame, (2, y), (2 + perf_size, y + perf_size * 2), color, 1)
+        cv2.rectangle(frame, (w - 2 - perf_size, y), (w - 2, y + perf_size * 2), color, 1)
+
+    # Label "NEGATIVE" di atas
+    cv2.putText(frame, "NEGATIVE", (w // 2 - 40, 20), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, color, 1, cv2.LINE_AA)
+
+
 def main():
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
@@ -479,16 +736,27 @@ def main():
     # Detektor tangan: butuh 2 tangan untuk gesture segitiga & love
     detector = HandDetector(detectionCon=0.7, maxHands=2)
 
-    print("=" * 50)
-    print("  GESTURE CAMERA - FULL EDITION")
-    print("  - Jari & landmark tangan terdeteksi otomatis")
-    print("  - Peace Sign (V) : Blur Full Screen")
-    print("  - Jempol & Telunjuk : Blur Area Kotak")
-    print("  - Segitiga △ (2 tangan) : Grayscale")
-    print("  - Love ❤️ (2 tangan)   : Efek Hati")
-    print("  - Kotak □ (2 tangan buka) : Anime Filter")
+    print("=" * 55)
+    print("  GESTURE CAMERA - ULTIMATE EDITION (10 Gestures)")
+    print("=" * 55)
+    print("  Jari & landmark tangan terdeteksi otomatis")
+    print("  -----------------------------------------------")
+    print("  [1 TANGAN]")
+    print("  Peace Sign (V)        : Blur Full Screen")
+    print("  Jempol & Telunjuk     : Blur Area Kotak")
+    print("  Rock Sign (metal)     : Glitch / VHS Effect")
+    print("  Telunjuk Saja         : Spotlight")
+    print("  Kelingking Saja       : Color Invert")
+    print("  Kepalan Tangan        : Night Vision")
+    print("  Telapak Terbuka       : Freeze Frame")
+    print("  -----------------------------------------------")
+    print("  [2 TANGAN]")
+    print("  Segitiga              : Grayscale")
+    print("  Love / Heart          : Efek Hati")
+    print("  Kotak (tangan buka)   : Anime Filter")
+    print("  -----------------------------------------------")
     print("  Tekan 'Q' untuk keluar")
-    print("=" * 50)
+    print("=" * 55)
 
     # Smooth transition untuk blur & grayscale
     blur_level = 0.0
@@ -517,6 +785,33 @@ def main():
     anime_speed = 0.15
     anime_rect = None    # (x_min, y_min, x_max, y_max)
 
+    # Night Vision state
+    nv_level = 0.0
+    nv_speed = 0.12
+
+    # Freeze Frame state
+    freeze_frame = None
+    freeze_level = 0.0
+    freeze_speed = 0.15
+    freeze_flash = 0.0
+    freeze_cooldown = 0
+    freeze_capture_time = 0
+    freeze_display_duration = 2.5
+
+    # Glitch/VHS state
+    glitch_level = 0.0
+    glitch_speed = 0.15
+
+    # Spotlight state
+    spot_level = 0.0
+    spot_speed = 0.12
+    spot_pos = (0, 0)
+    spot_radius = 120
+
+    # Color Invert state
+    invert_level = 0.0
+    invert_speed = 0.12
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -539,6 +834,12 @@ def main():
         love_size = 0
         rect_detected = False
         rect_coords = None
+        fist_detected = False
+        palm_detected = False
+        rock_detected = False
+        spotlight_detected = False
+        spotlight_pos = None
+        pinky_detected = False
 
         if hands:
             # Gambar landmark untuk setiap tangan yang terdeteksi
@@ -580,6 +881,28 @@ def main():
 
                     if x_max - x_min > 20 and y_max - y_min > 20:
                         box_coords = (x_min, y_min, x_max, y_max)
+
+                # LOGIKA 6: Rock Sign (Telunjuk + Kelingking UP) → Glitch/VHS
+                elif fingers == [0, 1, 0, 0, 1] or fingers == [1, 1, 0, 0, 1]:
+                    rock_detected = True
+
+                # LOGIKA 7: Telunjuk Saja → Spotlight
+                elif fingers == [0, 1, 0, 0, 0]:
+                    spotlight_detected = True
+                    lmList = hand1["lmList"]
+                    spotlight_pos = (lmList[8][0], lmList[8][1])
+
+                # LOGIKA 8: Kelingking Saja → Color Invert
+                elif fingers == [0, 0, 0, 0, 1]:
+                    pinky_detected = True
+
+                # LOGIKA 9: Kepalan Tangan → Night Vision
+                elif fingers == [0, 0, 0, 0, 0]:
+                    fist_detected = True
+
+                # LOGIKA 10: Telapak Terbuka (1 tangan saja) → Freeze Frame
+                elif sum(fingers) >= 5 and len(hands) == 1:
+                    palm_detected = True
 
                 # Deteksi segitiga: butuh 2 tangan
                 if len(hands) == 2 and not love_raw_detected and not rect_detected:
@@ -794,6 +1117,97 @@ def main():
                 # Gambar frame kotak bergaya anime
                 draw_anime_frame(frame, ax_min, ay_min, ax_max, ay_max, anime_level)
 
+        # 6. Night Vision (Kepalan Tangan)
+        if fist_detected:
+            nv_level = min(1.0, nv_level + nv_speed)
+        else:
+            nv_level = max(0.0, nv_level - nv_speed)
+
+        if nv_level > 0.01:
+            frame = apply_night_vision(frame, nv_level)
+            draw_night_vision_hud(frame, nv_level)
+
+        # 7. Freeze Frame (Telapak Terbuka)
+        if palm_detected and freeze_frame is None and (current_time - freeze_cooldown) > 1.0:
+            freeze_frame = frame.copy()
+            freeze_capture_time = current_time
+            freeze_flash = 1.0
+            freeze_level = 0.0
+
+        if freeze_frame is not None:
+            elapsed_freeze = current_time - freeze_capture_time
+            if elapsed_freeze < freeze_display_duration:
+                freeze_level = min(1.0, freeze_level + freeze_speed)
+                # Tampilkan frozen frame dengan border Polaroid
+                fh, fw = frame.shape[:2]
+                border = 15
+                display = cv2.addWeighted(freeze_frame, freeze_level, frame, 1 - freeze_level, 0)
+                # Border Polaroid
+                cv2.rectangle(display, (border, border), (fw - border, fh - border),
+                              (240, 240, 240), 2, cv2.LINE_AA)
+                cv2.rectangle(display, (border + 3, border + 3),
+                              (fw - border - 3, fh - border - 3),
+                              (200, 200, 200), 1, cv2.LINE_AA)
+                # Label "CAPTURED"
+                label_color = (200, 200, 200)
+                cv2.putText(display, "CAPTURED", (fw // 2 - 50, fh - border - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, label_color, 1, cv2.LINE_AA)
+                # Timestamp
+                cap_time_str = time.strftime("%H:%M:%S",
+                                             time.localtime(freeze_capture_time))
+                cv2.putText(display, cap_time_str, (border + 10, border + 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, label_color, 1, cv2.LINE_AA)
+                frame = display
+            else:
+                # Fade out
+                freeze_level = max(0.0, freeze_level - freeze_speed)
+                if freeze_level > 0.01:
+                    frame = cv2.addWeighted(freeze_frame, freeze_level,
+                                            frame, 1 - freeze_level, 0)
+                else:
+                    freeze_frame = None
+                    freeze_cooldown = current_time
+
+        # Flash effect saat capture
+        if freeze_flash > 0.01:
+            white = np.ones_like(frame, dtype=np.uint8) * 255
+            frame = cv2.addWeighted(white, freeze_flash * 0.7,
+                                    frame, 1 - freeze_flash * 0.7, 0)
+            freeze_flash *= 0.75  # Decay cepat
+
+        # 8. Glitch / VHS (Rock Sign)
+        if rock_detected:
+            glitch_level = min(1.0, glitch_level + glitch_speed)
+        else:
+            glitch_level = max(0.0, glitch_level - glitch_speed)
+
+        if glitch_level > 0.01:
+            frame = apply_glitch_effect(frame, glitch_level)
+            draw_glitch_hud(frame, glitch_level)
+
+        # 9. Spotlight (Telunjuk Saja)
+        if spotlight_detected and spotlight_pos:
+            spot_level = min(1.0, spot_level + spot_speed)
+            spot_pos = spotlight_pos
+        else:
+            spot_level = max(0.0, spot_level - spot_speed)
+
+        if spot_level > 0.01:
+            frame = apply_spotlight(frame, spot_pos[0], spot_pos[1],
+                                    spot_radius, spot_level)
+            draw_spotlight_ring(frame, spot_pos[0], spot_pos[1],
+                                spot_radius, spot_level)
+
+        # 10. Color Invert (Kelingking Saja)
+        if pinky_detected:
+            invert_level = min(1.0, invert_level + invert_speed)
+        else:
+            invert_level = max(0.0, invert_level - invert_speed)
+
+        if invert_level > 0.01:
+            frame = apply_color_invert(frame, invert_level)
+            draw_invert_border(frame, invert_level)
+
         # Gambar segitiga jika terdeteksi
         if triangle_detected and triangle_pts:
             pts = triangle_pts
@@ -811,7 +1225,7 @@ def main():
                 cv2.circle(frame, pt, 10, (0, 255, 255), cv2.FILLED)
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
 
-        cv2.imshow('Gesture Camera - Full Edition', frame)
+        cv2.imshow('Gesture Camera - Ultimate Edition', frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == ord('Q'):
