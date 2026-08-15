@@ -74,21 +74,39 @@ def draw_hand_landmarks(frame, hand, color=(0, 255, 150)):
         (5, 9), (9, 13), (13, 17),              # Penghubung pangkal jari
     ]
 
-    # Gambar garis koneksi
+    # Warna gradient per ujung jari (BGR)
+    finger_tip_colors = {
+        4:  (0, 230, 255),   # Jempol - kuning
+        8:  (255, 200, 0),   # Telunjuk - cyan
+        12: (255, 0, 220),   # Tengah - magenta
+        16: (0, 255, 100),   # Manis - hijau
+        20: (0, 150, 255),   # Kelingking - oranye
+    }
+
+    # Gambar garis koneksi dengan efek glow (double line)
     for c in connections:
         x1, y1 = lmList[c[0]][0], lmList[c[0]][1]
         x2, y2 = lmList[c[1]][0], lmList[c[1]][1]
+        # Outer glow (tebal, warna gelap)
+        glow = (color[0] // 3, color[1] // 3, color[2] // 3)
+        cv2.line(frame, (x1, y1), (x2, y2), glow, 5, cv2.LINE_AA)
+        # Inner line (tipis, terang)
         cv2.line(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
 
-    # Gambar titik landmark
+    # Gambar titik landmark dengan gradient warna per jari
     for i, lm in enumerate(lmList):
         x, y = lm[0], lm[1]
-        # Ujung jari (4, 8, 12, 16, 20) diberi warna dan ukuran berbeda
-        if i in [4, 8, 12, 16, 20]:
-            cv2.circle(frame, (x, y), 7, (0, 200, 255), cv2.FILLED)
+        if i in finger_tip_colors:
+            fc = finger_tip_colors[i]
+            # Outer glow ring
+            cv2.circle(frame, (x, y), 11, (fc[0]//3, fc[1]//3, fc[2]//3), 2, cv2.LINE_AA)
+            # Filled circle warna jari
+            cv2.circle(frame, (x, y), 7, fc, cv2.FILLED)
+            # White border
             cv2.circle(frame, (x, y), 9, (255, 255, 255), 2, cv2.LINE_AA)
         else:
             cv2.circle(frame, (x, y), 4, color, cv2.FILLED)
+            cv2.circle(frame, (x, y), 5, (color[0]//2, color[1]//2, color[2]//2), 1, cv2.LINE_AA)
 
 
 # ==========================================
@@ -517,7 +535,7 @@ def apply_night_vision(frame, level):
     return cv2.addWeighted(night, level, frame, 1 - level, 0)
 
 
-def draw_night_vision_hud(frame, level):
+def draw_night_vision_hud(frame, level, blink_on=True):
     """Gambar HUD overlay night vision: crosshair, corner brackets, text."""
     if level < 0.3:
         return
@@ -525,46 +543,94 @@ def draw_night_vision_hud(frame, level):
     alpha = min(1.0, level)
     color = (0, int(200 * alpha), 0)
 
-    # Corner brackets
-    blen = 30
-    corners = [
-        ((10, 10), (10 + blen, 10), (10, 10 + blen)),
-        ((w - 10, 10), (w - 10 - blen, 10), (w - 10, 10 + blen)),
-        ((10, h - 10), (10 + blen, h - 10), (10, h - 10 - blen)),
-        ((w - 10, h - 10), (w - 10 - blen, h - 10), (w - 10, h - 10 - blen)),
-    ]
-    for corner, h_end, v_end in corners:
-        cv2.line(frame, corner, h_end, color, 1, cv2.LINE_AA)
-        cv2.line(frame, corner, v_end, color, 1, cv2.LINE_AA)
+    # Corner brackets (detail)
+    blen = 40
+    cv2.line(frame, (15, 15), (15 + blen, 15), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (15, 15), (15, 15 + blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 15, 15), (w - 15 - blen, 15), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 15, 15), (w - 15, 15 + blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (15, h - 15), (15 + blen, h - 15), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (15, h - 15), (15, h - 15 - blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 15, h - 15), (w - 15 - blen, h - 15), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 15, h - 15), (w - 15, h - 15 - blen), color, 2, cv2.LINE_AA)
 
-    # Crosshair di tengah
+    # Scope reticle di tengah (lingkaran konsentris + garis silang)
     cx, cy = w // 2, h // 2
-    csize = 15
-    cv2.line(frame, (cx - csize, cy), (cx + csize, cy), color, 1, cv2.LINE_AA)
-    cv2.line(frame, (cx, cy - csize), (cx, cy + csize), color, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy), csize + 5, color, 1, cv2.LINE_AA)
+    dim = (0, int(100 * alpha), 0)
+    for r in [30, 60, 90]:
+        cv2.circle(frame, (cx, cy), r, dim, 1, cv2.LINE_AA)
+    # Garis silang dengan gap di tengah
+    gap = 15
+    cv2.line(frame, (cx - 90, cy), (cx - gap, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx + gap, cy), (cx + 90, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - 90), (cx, cy - gap), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy + gap), (cx, cy + 90), color, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), 2, color, cv2.FILLED)
+    # Tick marks pada crosshair
+    for d in [30, 60]:
+        tick = 5
+        cv2.line(frame, (cx - d, cy - tick), (cx - d, cy + tick), dim, 1, cv2.LINE_AA)
+        cv2.line(frame, (cx + d, cy - tick), (cx + d, cy + tick), dim, 1, cv2.LINE_AA)
+        cv2.line(frame, (cx - tick, cy - d), (cx + tick, cy - d), dim, 1, cv2.LINE_AA)
+        cv2.line(frame, (cx - tick, cy + d), (cx + tick, cy + d), dim, 1, cv2.LINE_AA)
 
-    # Labels
-    cv2.putText(frame, "NV MODE", (15, h - 20), cv2.FONT_HERSHEY_SIMPLEX,
+    # Labels kiri bawah
+    cv2.putText(frame, "NV MODE", (20, h - 45), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, color, 1, cv2.LINE_AA)
     time_str = time.strftime("%H:%M:%S")
-    cv2.putText(frame, time_str, (w - 110, h - 20), cv2.FONT_HERSHEY_SIMPLEX,
+    cv2.putText(frame, time_str, (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, color, 1, cv2.LINE_AA)
+
+    # "RECORDING" blink indicator (pojok kiri atas)
+    if blink_on:
+        cv2.circle(frame, (30, 30), 5, (0, 0, int(180 * alpha)), cv2.FILLED)
+        cv2.putText(frame, "RECORDING", (42, 35), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, color, 1, cv2.LINE_AA)
+
+    # Mini compass (pojok kanan atas)
+    comp_cx, comp_cy = w - 50, 50
+    comp_r = 22
+    cv2.circle(frame, (comp_cx, comp_cy), comp_r, dim, 1, cv2.LINE_AA)
+    cv2.putText(frame, "N", (comp_cx - 4, comp_cy - comp_r - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1, cv2.LINE_AA)
+    cv2.putText(frame, "S", (comp_cx - 3, comp_cy + comp_r + 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, dim, 1, cv2.LINE_AA)
+    cv2.putText(frame, "E", (comp_cx + comp_r + 5, comp_cy + 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, dim, 1, cv2.LINE_AA)
+    cv2.putText(frame, "W", (comp_cx - comp_r - 15, comp_cy + 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, dim, 1, cv2.LINE_AA)
+    # Compass needle
+    cv2.line(frame, (comp_cx, comp_cy), (comp_cx, comp_cy - comp_r + 5),
+             color, 2, cv2.LINE_AA)
+    cv2.line(frame, (comp_cx, comp_cy), (comp_cx, comp_cy + comp_r - 8),
+             dim, 1, cv2.LINE_AA)
+
+    # Distance meter (kanan bawah) - slowly oscillating
+    dist_val = 15.0 + 20.0 * math.sin(time.time() * 0.3)
+    cv2.putText(frame, f"DIST: {dist_val:.1f}m", (w - 150, h - 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+    elev_val = 1.5 + 0.5 * math.sin(time.time() * 0.5)
+    cv2.putText(frame, f"ELEV: {elev_val:.1f}m", (w - 150, h - 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, dim, 1, cv2.LINE_AA)
 
 
 # ==========================================
 #  Glitch / VHS Effect
 # ==========================================
 
-def apply_glitch_effect(frame, level):
+def apply_glitch_effect(frame, level, time_val=0):
     """Efek glitch/VHS retro: RGB split, horizontal bars, scanlines."""
     if level <= 0:
         return frame
     h, w = frame.shape[:2]
     result = frame.copy()
 
+    # Intensity oscillation (bergelombang otomatis)
+    osc = 0.6 + 0.4 * math.sin(time_val * 8.0)
+    eff_level = level * osc
+
     # RGB channel split (chromatic aberration)
-    shift = max(1, int(level * random.randint(5, 15)))
+    shift = max(1, int(eff_level * random.randint(5, 18)))
     if shift < w:
         # Red channel geser kanan
         result[:, shift:, 2] = frame[:, :w - shift, 2]
@@ -573,13 +639,18 @@ def apply_glitch_effect(frame, level):
         result[:, :w - shift, 0] = frame[:, shift:, 0]
         result[:, w - shift:, 0] = 0
 
+    # Green-magenta vertical shift
+    g_shift = max(1, int(eff_level * random.randint(2, 8)))
+    if g_shift < h:
+        result[g_shift:, :, 1] = frame[:h - g_shift, :, 1]
+
     # Random horizontal displacement bars
-    num_bars = int(level * random.randint(3, 8))
+    num_bars = int(eff_level * random.randint(3, 10))
     for _ in range(num_bars):
         y_start = random.randint(0, h - 1)
-        bar_h = random.randint(2, max(3, int(15 * level)))
+        bar_h = random.randint(2, max(3, int(15 * eff_level)))
         y_end = min(y_start + bar_h, h)
-        shift_x = random.randint(int(-25 * level), int(25 * level))
+        shift_x = random.randint(int(-30 * eff_level), int(30 * eff_level))
         if shift_x > 0 and shift_x < w:
             result[y_start:y_end, shift_x:] = frame[y_start:y_end, :w - shift_x]
         elif shift_x < 0 and abs(shift_x) < w:
@@ -589,26 +660,33 @@ def apply_glitch_effect(frame, level):
     result[::3, :] = (result[::3, :].astype(np.float32) * 0.85).astype(np.uint8)
 
     # Random color tint flicker
-    if random.random() < 0.3 * level:
+    if random.random() < 0.3 * eff_level:
         tint = np.zeros_like(result)
         tint[:, :] = (random.randint(0, 20), 0, random.randint(0, 25))
         result = cv2.add(result, tint)
 
     # Random horizontal white noise bar
-    if random.random() < 0.4 * level:
+    if random.random() < 0.4 * eff_level:
         y_noise = random.randint(0, h - 3)
         noise_h = random.randint(1, 4)
         y_end_n = min(y_noise + noise_h, h)
         noise_bar = np.random.randint(0, 255, (y_end_n - y_noise, w, 3), dtype=np.uint8)
-        alpha_noise = 0.3 * level
+        alpha_noise = 0.3 * eff_level
         result[y_noise:y_end_n] = cv2.addWeighted(
             noise_bar, alpha_noise, result[y_noise:y_end_n], 1 - alpha_noise, 0
         )
 
+    # Screen shake (geser frame sedikit secara acak)
+    if eff_level > 0.5:
+        shake_x = random.randint(-3, 3)
+        shake_y = random.randint(-2, 2)
+        M = np.float32([[1, 0, shake_x], [0, 1, shake_y]])
+        result = cv2.warpAffine(result, M, (w, h))
+
     return cv2.addWeighted(result, level, frame, 1 - level, 0)
 
 
-def draw_glitch_hud(frame, level):
+def draw_glitch_hud(frame, level, blink_on=True):
     """Gambar overlay VHS-style: REC indicator, timestamp."""
     if level < 0.3:
         return
@@ -616,9 +694,10 @@ def draw_glitch_hud(frame, level):
     alpha = min(1.0, level)
 
     # "REC" indicator dengan titik merah berkedip
-    rec_color = (0, 0, int(255 * alpha))
     txt_color = (int(200 * alpha), int(200 * alpha), int(200 * alpha))
-    cv2.circle(frame, (25, 25), 6, rec_color, cv2.FILLED)
+    if blink_on:
+        rec_color = (0, 0, int(255 * alpha))
+        cv2.circle(frame, (25, 25), 6, rec_color, cv2.FILLED)
     cv2.putText(frame, "REC", (38, 30), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, txt_color, 1, cv2.LINE_AA)
 
@@ -626,11 +705,20 @@ def draw_glitch_hud(frame, level):
     cv2.putText(frame, "PLAY >>", (w - 110, 25), cv2.FONT_HERSHEY_SIMPLEX,
                 0.4, txt_color, 1, cv2.LINE_AA)
 
+    # VHS tracking line (garis horizontal bergerak)
+    tracking_y = int((time.time() * 100) % h)
+    track_color = (int(100 * alpha), int(100 * alpha), int(100 * alpha))
+    cv2.line(frame, (0, tracking_y), (w, tracking_y), track_color, 1)
+
     # VHS timestamp di bawah
     time_str = time.strftime("%Y/%m/%d  %H:%M:%S")
     ts_color = (int(200 * alpha), int(200 * alpha), int(80 * alpha))
     cv2.putText(frame, time_str, (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
                 0.4, ts_color, 1, cv2.LINE_AA)
+
+    # SP mode indicator
+    cv2.putText(frame, "SP", (w - 40, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, txt_color, 1, cv2.LINE_AA)
 
 
 # ==========================================
@@ -669,23 +757,46 @@ def draw_spotlight_ring(frame, cx, cy, radius, level):
         return
     alpha = min(1.0, level)
     color = (int(200 * alpha), int(200 * alpha), int(100 * alpha))
-    dim_color = (int(100 * alpha), int(100 * alpha), int(50 * alpha))
+    dim = (int(80 * alpha), int(80 * alpha), int(40 * alpha))
+
+    # Multiple concentric rings
     cv2.circle(frame, (cx, cy), radius, color, 1, cv2.LINE_AA)
-    cv2.circle(frame, (cx, cy), radius + 3, dim_color, 1, cv2.LINE_AA)
-    # Crosshair kecil
-    csize = 8
-    cv2.line(frame, (cx - csize, cy), (cx + csize, cy), color, 1, cv2.LINE_AA)
-    cv2.line(frame, (cx, cy - csize), (cx, cy + csize), color, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), radius + 4, dim, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), max(1, radius - 8), dim, 1, cv2.LINE_AA)
+
+    # Crosshair dengan gap
+    csize = 10
+    gap = 4
+    cv2.line(frame, (cx - csize, cy), (cx - gap, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx + gap, cy), (cx + csize, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - csize), (cx, cy - gap), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy + gap), (cx, cy + csize), color, 1, cv2.LINE_AA)
+
+    # Radial tick marks (8 arah)
+    for angle_deg in range(0, 360, 45):
+        rad = math.radians(angle_deg)
+        inner_r = radius - 5
+        outer_r = radius + 2
+        x1 = int(cx + inner_r * math.cos(rad))
+        y1 = int(cy + inner_r * math.sin(rad))
+        x2 = int(cx + outer_r * math.cos(rad))
+        y2 = int(cy + outer_r * math.sin(rad))
+        cv2.line(frame, (x1, y1), (x2, y2), dim, 1, cv2.LINE_AA)
+
     # Label
-    cv2.putText(frame, "SPOTLIGHT", (cx - 35, cy - radius - 10),
+    cv2.putText(frame, "SPOTLIGHT", (cx - 35, cy - radius - 12),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+    # Coordinates display
+    coord_str = f"({cx},{cy})"
+    cv2.putText(frame, coord_str, (cx - 25, cy + radius + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, dim, 1, cv2.LINE_AA)
 
 
 # ==========================================
 #  Color Invert / Negative Effect
 # ==========================================
 
-def apply_color_invert(frame, level):
+def apply_color_invert(frame, level, frame_count=0):
     """Inversi warna (efek negatif) dengan scanline ala film."""
     if level <= 0:
         return frame
@@ -696,6 +807,13 @@ def apply_color_invert(frame, level):
     # Blend
     result = cv2.addWeighted(inverted, level, frame, 1 - level, 0)
 
+    # Film grain noise
+    if level > 0.3:
+        h_r, w_r = result.shape[:2]
+        grain = np.random.randint(0, int(30 * level), (h_r, w_r), dtype=np.uint8)
+        grain_bgr = cv2.cvtColor(grain, cv2.COLOR_GRAY2BGR)
+        result = cv2.add(result, grain_bgr)
+
     # Scanlines tipis ala film negatif
     if level > 0.3:
         result[::4, :] = (result[::4, :].astype(np.float32) *
@@ -704,7 +822,7 @@ def apply_color_invert(frame, level):
     return result
 
 
-def draw_invert_border(frame, level):
+def draw_invert_border(frame, level, frame_count=0):
     """Gambar border film negatif dengan perforasi."""
     if level < 0.3:
         return
@@ -712,19 +830,180 @@ def draw_invert_border(frame, level):
     alpha = min(1.0, level)
     color = (int(180 * alpha), int(120 * alpha), int(255 * alpha))
 
-    # Border tipis
+    # Border ganda
     cv2.rectangle(frame, (5, 5), (w - 5, h - 5), color, 1, cv2.LINE_AA)
+    cv2.rectangle(frame, (8, 8), (w - 8, h - 8),
+                  (int(80*alpha), int(60*alpha), int(120*alpha)), 1)
 
-    # Film perforations (lubang film) di kiri dan kanan
-    perf_size = 6
-    perf_gap = 25
-    for y in range(15, h - 15, perf_gap):
-        cv2.rectangle(frame, (2, y), (2 + perf_size, y + perf_size * 2), color, 1)
-        cv2.rectangle(frame, (w - 2 - perf_size, y), (w - 2, y + perf_size * 2), color, 1)
+    # Film perforations bergerak (animated sprocket holes)
+    perf_w = 8
+    perf_h = 14
+    perf_gap = 28
+    offset = int(frame_count * 2) % perf_gap  # Animasi bergerak
+    for y in range(-perf_gap + offset, h + perf_gap, perf_gap):
+        if 0 <= y < h - perf_h:
+            # Kiri
+            cv2.rectangle(frame, (1, y), (1 + perf_w, y + perf_h), color, 1)
+            cv2.rectangle(frame, (3, y + 2), (perf_w - 1, y + perf_h - 2),
+                          (int(40*alpha), int(30*alpha), int(60*alpha)), cv2.FILLED)
+            # Kanan
+            cv2.rectangle(frame, (w - 1 - perf_w, y), (w - 1, y + perf_h), color, 1)
+            cv2.rectangle(frame, (w - perf_w + 1, y + 2), (w - 3, y + perf_h - 2),
+                          (int(40*alpha), int(30*alpha), int(60*alpha)), cv2.FILLED)
 
     # Label "NEGATIVE" di atas
-    cv2.putText(frame, "NEGATIVE", (w // 2 - 40, 20), cv2.FONT_HERSHEY_SIMPLEX,
+    cv2.putText(frame, "NEGATIVE", (w // 2 - 45, 22), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, color, 1, cv2.LINE_AA)
+
+    # Frame counter di pojok kanan bawah
+    counter_str = f"F:{frame_count:06d}"
+    cv2.putText(frame, counter_str, (w - 100, h - 12), cv2.FONT_HERSHEY_SIMPLEX,
+                0.35, color, 1, cv2.LINE_AA)
+
+
+def lerp(a, b, t):
+    """Linear interpolation antara a dan b dengan faktor t."""
+    return a + (b - a) * t
+
+
+def draw_fps_counter(frame, fps):
+    """Gambar FPS counter di pojok kiri atas."""
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (8, 5), (95, 28), (0, 0, 0), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+    fps_color = (0, 255, 0) if fps >= 20 else (0, 200, 255) if fps >= 10 else (0, 0, 255)
+    cv2.putText(frame, f"FPS: {int(fps)}", (12, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, fps_color, 1, cv2.LINE_AA)
+
+
+def draw_active_gesture_label(frame, gesture_name, gesture_color):
+    """Gambar label gesture aktif di pojok kanan bawah."""
+    if not gesture_name:
+        return
+    h, w = frame.shape[:2]
+    label = f"[ {gesture_name} ]"
+    text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0]
+    tx = w - text_size[0] - 15
+    ty = h - 15
+    # Background semi-transparan
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (tx - 8, ty - text_size[1] - 8),
+                  (tx + text_size[0] + 8, ty + 8), (0, 0, 0), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+    # Border
+    cv2.rectangle(frame, (tx - 8, ty - text_size[1] - 8),
+                  (tx + text_size[0] + 8, ty + 8), gesture_color, 1, cv2.LINE_AA)
+    # Text
+    cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, gesture_color, 2, cv2.LINE_AA)
+
+
+def draw_info_panel(frame):
+    """Gambar panel info gesture semi-transparan di tengah layar."""
+    h, w = frame.shape[:2]
+    pw, ph = 320, 320
+    px = (w - pw) // 2
+    py = (h - ph) // 2
+
+    # Background semi-transparan
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (px, py), (px + pw, py + ph), (20, 20, 20), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+    cv2.rectangle(frame, (px, py), (px + pw, py + ph), (100, 200, 255), 2, cv2.LINE_AA)
+
+    # Title
+    cv2.putText(frame, "GESTURE GUIDE", (px + 80, py + 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 200, 255), 2, cv2.LINE_AA)
+    cv2.line(frame, (px + 10, py + 38), (px + pw - 10, py + 38), (80, 80, 80), 1)
+
+    gestures = [
+        ("Peace (V)", "Blur Screen", (255, 200, 100)),
+        ("Thumb+Index", "Blur Area", (200, 200, 100)),
+        ("Rock Sign", "Glitch/VHS", (100, 100, 255)),
+        ("Index Only", "Spotlight", (200, 200, 100)),
+        ("Pinky Only", "Color Invert", (180, 120, 255)),
+        ("Fist", "Night Vision", (0, 200, 0)),
+        ("Open Palm", "Freeze Frame", (200, 200, 200)),
+        ("Triangle (2H)", "Grayscale", (200, 200, 200)),
+        ("Heart (2H)", "Love Effect", (100, 80, 255)),
+        ("Rectangle (2H)", "Anime Filter", (255, 255, 100)),
+    ]
+
+    y_start = py + 58
+    line_h = 24
+    for i, (gesture, effect, c) in enumerate(gestures):
+        y_pos = y_start + i * line_h
+        cv2.putText(frame, gesture, (px + 15, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 175, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, c, 1, cv2.LINE_AA)
+
+    cv2.putText(frame, "Press H to hide | Q to quit", (px + 45, py + ph - 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+
+
+def draw_box_blur_border(frame, x_min, y_min, x_max, y_max):
+    """Gambar neon border di sekeliling area box blur."""
+    # Outer glow
+    cv2.rectangle(frame, (x_min - 2, y_min - 2), (x_max + 2, y_max + 2),
+                  (150, 100, 0), 3, cv2.LINE_AA)
+    # Inner line
+    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max),
+                  (255, 200, 50), 1, cv2.LINE_AA)
+
+    # Corner markers (L-shaped)
+    corner_len = min(20, (x_max - x_min) // 5, (y_max - y_min) // 5)
+    cc = (255, 255, 100)
+    for idx, (cx_c, cy_c) in enumerate([(x_min, y_min), (x_max, y_min),
+                                         (x_min, y_max), (x_max, y_max)]):
+        dx = corner_len if (idx % 2 == 0) else -corner_len
+        dy = corner_len if (idx < 2) else -corner_len
+        cv2.line(frame, (cx_c, cy_c), (cx_c + dx, cy_c), cc, 2, cv2.LINE_AA)
+        cv2.line(frame, (cx_c, cy_c), (cx_c, cy_c + dy), cc, 2, cv2.LINE_AA)
+
+    # Label "BLUR ZONE"
+    label_y = max(y_min - 8, 15)
+    cv2.putText(frame, "BLUR ZONE", (x_min, label_y), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, cc, 1, cv2.LINE_AA)
+
+
+def draw_startup_splash(frame, alpha):
+    """Gambar startup splash overlay yang fade out."""
+    if alpha <= 0.01:
+        return frame
+    h, w = frame.shape[:2]
+
+    # Dark overlay
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+    frame = cv2.addWeighted(overlay, alpha * 0.7, frame, 1 - alpha * 0.7, 0)
+
+    # Title text
+    title = "GESTURE CAMERA"
+    sub = "ULTIMATE EDITION"
+    title_alpha = min(1.0, alpha * 2)
+    t_color = (int(100 * title_alpha), int(200 * title_alpha), int(255 * title_alpha))
+    s_color = (int(150 * title_alpha), int(150 * title_alpha), int(150 * title_alpha))
+
+    t_size = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
+    s_size = cv2.getTextSize(sub, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0]
+    tx = (w - t_size[0]) // 2
+    ty = h // 2 - 10
+    sx = (w - s_size[0]) // 2
+    sy = h // 2 + 30
+
+    cv2.putText(frame, title, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
+                1.2, t_color, 3, cv2.LINE_AA)
+    cv2.putText(frame, sub, (sx, sy), cv2.FONT_HERSHEY_SIMPLEX,
+                0.6, s_color, 1, cv2.LINE_AA)
+
+    ver = "v2.0 | 10 Gestures | Press H for help"
+    v_size = cv2.getTextSize(ver, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)[0]
+    vx = (w - v_size[0]) // 2
+    v_color = (int(80*title_alpha), int(80*title_alpha), int(80*title_alpha))
+    cv2.putText(frame, ver, (vx, h // 2 + 60), cv2.FONT_HERSHEY_SIMPLEX,
+                0.35, v_color, 1, cv2.LINE_AA)
+
+    return frame
 
 
 def main():
