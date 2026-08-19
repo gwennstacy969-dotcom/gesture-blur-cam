@@ -2,11 +2,13 @@ import cv2
 import math
 import time
 import random
+import os
 import numpy as np
+from collections import deque
 from cvzone.HandTrackingModule import HandDetector
 
 # ==========================================
-#  Gesture Camera - Ultimate Edition (10 Gestures)
+#  Gesture Camera - Ultimate Edition (16 Gestures)
 #  --- 1 Tangan ---
 #  1. Peace Sign (V) = Blur Seluruh Layar
 #  2. Jempol & Telunjuk = Blur dalam kotak
@@ -19,6 +21,13 @@ from cvzone.HandTrackingModule import HandDetector
 #  8. Segitiga △ (dua tangan) = Grayscale
 #  9. Love/Heart ❤️ (dua tangan) = Efek Hati
 # 10. Kotak □ (dua tangan terbuka) = Anime Filter
+#  --- BARU ---
+# 11. Jari Tengah Saja = Thermal Vision
+# 12. Jari Manis Saja = Underwater Effect
+# 13. Jempol Saja = Slow Motion Replay
+# 14. Telunjuk+Tengah+Manis = Color Pop
+# 15. Keyboard S = Screenshot
+# 16. Keyboard R = Video Recording
 # ==========================================
 
 def distance(p1, p2):
@@ -861,6 +870,556 @@ def draw_invert_border(frame, level, frame_count=0):
                 0.35, color, 1, cv2.LINE_AA)
 
 
+# ==========================================
+#  🔥 Thermal Vision Effect (BARU - Fitur 11)
+# ==========================================
+
+def apply_thermal_vision(frame, level):
+    """Efek thermal/infrared vision menggunakan colormap JET."""
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+
+    # Convert ke grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Boost kontras dengan CLAHE (agar detail panas terlihat jelas)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # Apply colormap JET (biru=dingin, merah=panas)
+    thermal = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+
+    # Tambahkan sedikit blur untuk efek "heat diffusion"
+    thermal = cv2.GaussianBlur(thermal, (3, 3), 0)
+
+    # Noise grain kecil untuk efek sensor thermal
+    noise = np.random.randint(0, int(8 * level), (h, w), dtype=np.uint8)
+    noise_bgr = cv2.cvtColor(noise, cv2.COLOR_GRAY2BGR)
+    thermal = cv2.add(thermal, noise_bgr)
+
+    # Blend sesuai level
+    return cv2.addWeighted(thermal, level, frame, 1 - level, 0)
+
+
+def draw_thermal_hud(frame, level):
+    """Gambar HUD thermal vision: color scale bar, crosshair, suhu palsu."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+
+    # Warna HUD thermal (kuning-putih)
+    color = (int(100 * alpha), int(220 * alpha), int(255 * alpha))
+    dim = (int(50 * alpha), int(110 * alpha), int(128 * alpha))
+
+    # Corner brackets thermal style
+    blen = 30
+    cv2.line(frame, (10, 10), (10 + blen, 10), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (10, 10), (10, 10 + blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 10, 10), (w - 10 - blen, 10), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 10, 10), (w - 10, 10 + blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (10, h - 10), (10 + blen, h - 10), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (10, h - 10), (10, h - 10 - blen), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 10, h - 10), (w - 10 - blen, h - 10), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 10, h - 10), (w - 10, h - 10 - blen), color, 2, cv2.LINE_AA)
+
+    # Crosshair di tengah
+    cx, cy = w // 2, h // 2
+    gap = 12
+    cv2.line(frame, (cx - 40, cy), (cx - gap, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx + gap, cy), (cx + 40, cy), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy - 40), (cx, cy - gap), color, 1, cv2.LINE_AA)
+    cv2.line(frame, (cx, cy + gap), (cx, cy + 40), color, 1, cv2.LINE_AA)
+    cv2.circle(frame, (cx, cy), 3, color, 1, cv2.LINE_AA)
+
+    # Suhu palsu di tengah crosshair (oscillating)
+    fake_temp = 32.0 + 6.0 * math.sin(time.time() * 1.5) + random.uniform(-0.5, 0.5)
+    cv2.putText(frame, f"{fake_temp:.1f} C", (cx + 15, cy - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+    # Color scale bar di kanan
+    bar_x = w - 35
+    bar_y_start = 60
+    bar_h = 160
+    bar_w = 15
+    for i in range(bar_h):
+        ratio = i / bar_h
+        val = int(255 * (1 - ratio))
+        bar_color_row = cv2.applyColorMap(
+            np.array([[val]], dtype=np.uint8), cv2.COLORMAP_JET
+        )[0][0]
+        bar_color_tuple = (int(bar_color_row[0] * alpha),
+                           int(bar_color_row[1] * alpha),
+                           int(bar_color_row[2] * alpha))
+        cv2.line(frame, (bar_x, bar_y_start + i),
+                 (bar_x + bar_w, bar_y_start + i), bar_color_tuple, 1)
+    cv2.rectangle(frame, (bar_x - 1, bar_y_start - 1),
+                  (bar_x + bar_w + 1, bar_y_start + bar_h + 1), dim, 1)
+    cv2.putText(frame, "HOT", (bar_x - 5, bar_y_start - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, int(255 * alpha)), 1, cv2.LINE_AA)
+    cv2.putText(frame, "COLD", (bar_x - 10, bar_y_start + bar_h + 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (int(255 * alpha), 0, 0), 1, cv2.LINE_AA)
+
+    # Label "THERMAL" kiri atas
+    cv2.putText(frame, "THERMAL IMAGING", (15, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, color, 1, cv2.LINE_AA)
+
+    # Timestamp kiri bawah
+    time_str = time.strftime("%H:%M:%S")
+    cv2.putText(frame, time_str, (15, h - 20), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, dim, 1, cv2.LINE_AA)
+
+    # "MAX" dan "MIN" temp labels
+    max_temp = 38.0 + random.uniform(-0.3, 0.3)
+    min_temp = 22.0 + random.uniform(-0.3, 0.3)
+    cv2.putText(frame, f"MAX: {max_temp:.1f}C", (15, h - 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, int(100 * alpha), int(255 * alpha)), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"MIN: {min_temp:.1f}C", (15, h - 38),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (int(255 * alpha), int(100 * alpha), 0), 1, cv2.LINE_AA)
+
+
+# ==========================================
+#  🌊 Underwater / Aqua Effect (BARU - Fitur 12)
+# ==========================================
+
+class BubbleParticle:
+    """Partikel gelembung air yang naik ke atas."""
+    def __init__(self, frame_w, frame_h):
+        self.frame_w = frame_w
+        self.frame_h = frame_h
+        self.reset()
+
+    def reset(self):
+        self.x = float(random.randint(0, self.frame_w))
+        self.y = float(self.frame_h + random.randint(10, 60))
+        self.vx = random.uniform(-0.5, 0.5)
+        self.vy = random.uniform(-3.0, -1.0)
+        self.size = random.randint(3, 14)
+        self.wobble_phase = random.uniform(0, 2 * math.pi)
+        self.wobble_speed = random.uniform(2.0, 5.0)
+        self.wobble_amp = random.uniform(0.5, 2.0)
+        self.life = 1.0
+        self.alpha = random.uniform(0.3, 0.8)
+
+    def update(self, time_val):
+        self.y += self.vy
+        self.x += self.vx + math.sin(time_val * self.wobble_speed + self.wobble_phase) * self.wobble_amp
+        self.vy -= 0.01  # sedikit percepatan ke atas
+        if self.y < -20:
+            self.reset()
+
+    def draw(self, frame, level):
+        ix, iy = int(self.x), int(self.y)
+        if iy < 0 or iy >= self.frame_h or ix < 0 or ix >= self.frame_w:
+            return
+        a = self.alpha * level
+        s = self.size
+
+        # Gelembung utama (lingkaran semi-transparan)
+        overlay = frame.copy()
+        bubble_color = (int(200 * a), int(180 * a), int(140 * a))  # Biru muda
+        cv2.circle(overlay, (ix, iy), s, bubble_color, 1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        # Highlight (kilatan cahaya di sudut kiri atas gelembung)
+        hx = ix - max(1, s // 3)
+        hy = iy - max(1, s // 3)
+        highlight_size = max(1, s // 4)
+        highlight_color = (int(255 * a), int(255 * a), int(255 * a))
+        cv2.circle(frame, (hx, hy), highlight_size, highlight_color, cv2.FILLED, cv2.LINE_AA)
+
+
+def apply_underwater_effect(frame, level, time_val=0):
+    """Efek bawah air: distorsi gelombang, tint biru-hijau, caustics."""
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    result = frame.copy()
+
+    # Distorsi sinusoidal (gelombang air)
+    wave_amp = int(3 * level)
+    wave_freq = 0.02
+    if wave_amp > 0:
+        map_x = np.zeros((h, w), dtype=np.float32)
+        map_y = np.zeros((h, w), dtype=np.float32)
+        for row in range(h):
+            for col in range(w):
+                map_x[row, col] = col + wave_amp * math.sin(row * wave_freq + time_val * 2.0)
+                map_y[row, col] = row + wave_amp * math.sin(col * wave_freq + time_val * 1.5)
+        result = cv2.remap(result, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Tint biru-hijau (warna bawah air)
+    tint_overlay = np.zeros_like(result, dtype=np.uint8)
+    tint_overlay[:, :] = (140, 90, 20)  # BGR: biru tua + sedikit hijau
+    tint_strength = 0.25 * level
+    result = cv2.addWeighted(result, 1 - tint_strength, tint_overlay, tint_strength, 0)
+
+    # God rays / caustics dari atas (garis-garis cahaya yang bergerak)
+    caustic_overlay = np.zeros_like(result, dtype=np.uint8)
+    num_rays = 5
+    for i in range(num_rays):
+        ray_x = int((w / (num_rays + 1)) * (i + 1) + 40 * math.sin(time_val * 0.8 + i * 1.2))
+        ray_w = random.randint(15, 35)
+        ray_alpha_val = int(40 * level * (0.5 + 0.5 * math.sin(time_val * 1.5 + i * 0.7)))
+        pts = np.array([
+            [ray_x - ray_w // 2, 0],
+            [ray_x + ray_w // 2, 0],
+            [ray_x + ray_w, h],
+            [ray_x - ray_w, h],
+        ], dtype=np.int32)
+        cv2.fillPoly(caustic_overlay, [pts], (ray_alpha_val, ray_alpha_val, ray_alpha_val // 2))
+    result = cv2.add(result, caustic_overlay)
+
+    # Vignette biru gelap di pinggir
+    cy_v, cx_v = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    max_dist = math.sqrt(cx_v**2 + cy_v**2)
+    dist = np.sqrt((X.astype(np.float32) - cx_v)**2 + (Y.astype(np.float32) - cy_v)**2)
+    vignette = np.clip(1.0 - (dist / max_dist) * 0.5 * level, 0.4, 1.0).astype(np.float32)
+    for c_ch in range(3):
+        result[:, :, c_ch] = (result[:, :, c_ch].astype(np.float32) * vignette).astype(np.uint8)
+
+    # Blend
+    return cv2.addWeighted(result, level, frame, 1 - level, 0)
+
+
+def draw_underwater_hud(frame, level, time_val=0):
+    """HUD efek bawah air: kedalaman, tekanan, O2 level."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+    color = (int(200 * alpha), int(180 * alpha), int(80 * alpha))  # Cyan
+    dim = (int(100 * alpha), int(90 * alpha), int(40 * alpha))
+
+    # Label "UNDERWATER" di atas
+    cv2.putText(frame, "UNDERWATER MODE", (15, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, color, 1, cv2.LINE_AA)
+
+    # Depth meter kiri
+    depth = 12.5 + 5.0 * math.sin(time_val * 0.3)
+    cv2.putText(frame, f"DEPTH: {depth:.1f}m", (15, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+    # Pressure
+    pressure = 2.2 + 0.5 * math.sin(time_val * 0.2)
+    cv2.putText(frame, f"PRESS: {pressure:.1f} atm", (15, 75),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, dim, 1, cv2.LINE_AA)
+
+    # O2 level bar di kiri bawah
+    o2_level = 0.75 + 0.15 * math.sin(time_val * 0.1)
+    bar_x = 15
+    bar_y = h - 50
+    bar_w = 100
+    bar_h = 12
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), dim, 1)
+    fill_w = int(bar_w * o2_level)
+    bar_fill_color = (int(200 * alpha), int(200 * alpha), 0) if o2_level > 0.3 else (0, 0, int(255 * alpha))
+    cv2.rectangle(frame, (bar_x + 1, bar_y + 1), (bar_x + fill_w, bar_y + bar_h - 1),
+                  bar_fill_color, cv2.FILLED)
+    cv2.putText(frame, f"O2: {int(o2_level * 100)}%", (bar_x, bar_y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+
+    # Temperature air
+    water_temp = 18.0 + 3.0 * math.sin(time_val * 0.15)
+    cv2.putText(frame, f"WATER: {water_temp:.1f}C", (15, h - 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, dim, 1, cv2.LINE_AA)
+
+    # Compass bearing kanan bawah
+    bearing = int((time_val * 10) % 360)
+    cv2.putText(frame, f"BRG: {bearing:03d}", (w - 110, h - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+
+# ==========================================
+#  🎬 Slow Motion Replay (BARU - Fitur 13)
+# ==========================================
+
+def draw_slowmo_overlay(frame, replay_progress, replay_index, total_frames):
+    """Gambar overlay sinematik slow-motion: letterbox + label."""
+    h, w = frame.shape[:2]
+
+    # Cinematic letterbox bars (atas dan bawah)
+    bar_height = int(h * 0.08)
+    cv2.rectangle(frame, (0, 0), (w, bar_height), (0, 0, 0), cv2.FILLED)
+    cv2.rectangle(frame, (0, h - bar_height), (w, h), (0, 0, 0), cv2.FILLED)
+
+    # Label "SLOW-MO REPLAY" di bar atas
+    label_color = (180, 180, 255)
+    cv2.putText(frame, "SLOW-MO REPLAY", (15, bar_height - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, label_color, 1, cv2.LINE_AA)
+
+    # Playback icon (triangle ◀◀)
+    tri_x = w - 100
+    tri_y = bar_height - 15
+    pts1 = np.array([[tri_x, tri_y], [tri_x + 12, tri_y + 8], [tri_x, tri_y + 16]], dtype=np.int32)
+    pts2 = np.array([[tri_x + 14, tri_y], [tri_x + 26, tri_y + 8], [tri_x + 14, tri_y + 16]], dtype=np.int32)
+    cv2.fillPoly(frame, [pts1], label_color)
+    cv2.fillPoly(frame, [pts2], label_color)
+
+    # Progress bar di bar bawah
+    prog_y = h - bar_height + 8
+    prog_x = 15
+    prog_w = w - 30
+    prog_h = 4
+    cv2.rectangle(frame, (prog_x, prog_y), (prog_x + prog_w, prog_y + prog_h),
+                  (80, 80, 80), cv2.FILLED)
+    filled = int(prog_w * replay_progress)
+    cv2.rectangle(frame, (prog_x, prog_y), (prog_x + filled, prog_y + prog_h),
+                  label_color, cv2.FILLED)
+
+    # Frame counter
+    fc_text = f"{replay_index}/{total_frames}"
+    cv2.putText(frame, fc_text, (w - 80, h - bar_height + 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+
+    # Blink "▶" indicator
+    if int(time.time() * 4) % 2 == 0:
+        cv2.putText(frame, "x0.3", (15, h - bar_height + 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1, cv2.LINE_AA)
+
+    # Motion trail effect - subtle blue tint
+    overlay = np.zeros_like(frame, dtype=np.uint8)
+    overlay[:, :] = (40, 15, 5)
+    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+
+
+# ==========================================
+#  🌈 Color Pop / Selective Color (BARU - Fitur 14)
+# ==========================================
+
+def apply_color_pop(frame, hand, level):
+    """
+    Efek Color Pop: seluruh frame grayscale kecuali warna dominan di area tangan.
+    Efek dramatis ala Sin City.
+    """
+    if level <= 0:
+        return frame
+    h, w = frame.shape[:2]
+
+    lmList = hand["lmList"]
+
+    # Ambil warna area di sekitar telapak tangan (landmark 0 = wrist, 9 = middle base)
+    palm_x = lmList[9][0]
+    palm_y = lmList[9][1]
+
+    # Sampling area kecil di sekitar telapak untuk mendapatkan warna dominan
+    sample_size = 20
+    sx1 = max(0, palm_x - sample_size)
+    sx2 = min(w, palm_x + sample_size)
+    sy1 = max(0, palm_y - sample_size)
+    sy2 = min(h, palm_y + sample_size)
+
+    if sx2 - sx1 < 5 or sy2 - sy1 < 5:
+        return frame
+
+    sample_region = frame[sy1:sy2, sx1:sx2]
+    sample_hsv = cv2.cvtColor(sample_region, cv2.COLOR_BGR2HSV)
+
+    # Hitung hue dominan
+    mean_hue = np.mean(sample_hsv[:, :, 0])
+    mean_sat = np.mean(sample_hsv[:, :, 1])
+
+    # Buat mask untuk warna yang dekat dengan warna dominan
+    hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hue_range = 20  # Toleransi hue
+    sat_min = max(30, int(mean_sat * 0.4))
+
+    lower = np.array([max(0, int(mean_hue) - hue_range), sat_min, 40])
+    upper = np.array([min(179, int(mean_hue) + hue_range), 255, 255])
+
+    # Handle wrap-around untuk hue
+    if mean_hue - hue_range < 0:
+        mask1 = cv2.inRange(hsv_frame, np.array([0, sat_min, 40]), upper)
+        mask2 = cv2.inRange(hsv_frame, np.array([180 + int(mean_hue) - hue_range, sat_min, 40]),
+                            np.array([179, 255, 255]))
+        color_mask = cv2.bitwise_or(mask1, mask2)
+    elif mean_hue + hue_range > 179:
+        mask1 = cv2.inRange(hsv_frame, lower, np.array([179, 255, 255]))
+        mask2 = cv2.inRange(hsv_frame, np.array([0, sat_min, 40]),
+                            np.array([int(mean_hue) + hue_range - 180, 255, 255]))
+        color_mask = cv2.bitwise_or(mask1, mask2)
+    else:
+        color_mask = cv2.inRange(hsv_frame, lower, upper)
+
+    # Smooth mask edges
+    color_mask = cv2.GaussianBlur(color_mask, (7, 7), 0)
+    _, color_mask = cv2.threshold(color_mask, 127, 255, cv2.THRESH_BINARY)
+
+    # Buat frame grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    # Gabungkan: grayscale di background, warna asli di foreground (mask)
+    color_mask_3ch = cv2.cvtColor(color_mask, cv2.COLOR_GRAY2BGR) / 255.0
+    result = (frame.astype(np.float32) * color_mask_3ch +
+              gray_bgr.astype(np.float32) * (1 - color_mask_3ch)).astype(np.uint8)
+
+    # Boost saturasi area berwarna agar lebih "pop"
+    result_hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+    sat_boost = color_mask.astype(np.float32) / 255.0
+    result_hsv[:, :, 1] = np.clip(
+        result_hsv[:, :, 1].astype(np.float32) * (1.0 + 0.5 * sat_boost), 0, 255
+    ).astype(np.uint8)
+    result = cv2.cvtColor(result_hsv, cv2.COLOR_HSV2BGR)
+
+    # Vignette dramatis
+    cy_v, cx_v = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    max_dist = math.sqrt(cx_v**2 + cy_v**2)
+    dist_map = np.sqrt((X.astype(np.float32) - cx_v)**2 + (Y.astype(np.float32) - cy_v)**2)
+    vignette = np.clip(1.0 - (dist_map / max_dist) * 0.4 * level, 0.5, 1.0).astype(np.float32)
+    for c_ch in range(3):
+        result[:, :, c_ch] = (result[:, :, c_ch].astype(np.float32) * vignette).astype(np.uint8)
+
+    # Blend sesuai level
+    return cv2.addWeighted(result, level, frame, 1 - level, 0)
+
+
+def draw_color_pop_overlay(frame, level):
+    """Overlay label Color Pop."""
+    if level < 0.3:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, level)
+    color = (int(100 * alpha), int(200 * alpha), int(255 * alpha))
+
+    # Label "COLOR POP" di atas
+    cv2.putText(frame, "COLOR POP", (w // 2 - 55, 25), cv2.FONT_HERSHEY_SIMPLEX,
+                0.6, color, 2, cv2.LINE_AA)
+
+    # Garis bawah label
+    cv2.line(frame, (w // 2 - 55, 32), (w // 2 + 60, 32), color, 1, cv2.LINE_AA)
+
+    # Corner accents (kiri atas dan kanan bawah)
+    accent_len = 20
+    cv2.line(frame, (5, 5), (5 + accent_len, 5), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (5, 5), (5, 5 + accent_len), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 5, h - 5), (w - 5 - accent_len, h - 5), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (w - 5, h - 5), (w - 5, h - 5 - accent_len), color, 2, cv2.LINE_AA)
+
+
+# ==========================================
+#  📸 Screenshot Helper (BARU - Fitur 15)
+# ==========================================
+
+def save_screenshot(frame, captures_dir):
+    """Simpan screenshot ke folder captures/ dan return path file."""
+    os.makedirs(captures_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"capture_{timestamp}.png"
+    filepath = os.path.join(captures_dir, filename)
+    cv2.imwrite(filepath, frame)
+    return filepath, filename
+
+
+def draw_screenshot_thumbnail(frame, thumbnail, display_time, filepath, position="bottom-right"):
+    """Gambar thumbnail screenshot di pojok dengan animasi slide-in."""
+    if thumbnail is None:
+        return
+    h, w = frame.shape[:2]
+    th, tw = thumbnail.shape[:2]
+
+    # Animasi slide-in (pertama 0.5 detik)
+    slide_progress = min(1.0, display_time / 0.5)
+    offset_x = int((1 - slide_progress) * (tw + 20))
+
+    # Posisi thumbnail
+    margin = 15
+    tx = w - tw - margin - offset_x  # Kanan bawah yang bukan area label gesture
+    ty = h - th - margin - 40  # Agak naik agar tidak overlap label gesture
+
+    if tx < 0:
+        return
+
+    # Background gelap + border
+    pad = 4
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (tx - pad, ty - pad), (tx + tw + pad, ty + th + pad + 18),
+                  (20, 20, 20), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+
+    # Border putih
+    cv2.rectangle(frame, (tx - pad, ty - pad), (tx + tw + pad, ty + th + pad + 18),
+                  (200, 200, 200), 1, cv2.LINE_AA)
+
+    # Thumbnail
+    frame[ty:ty+th, tx:tx+tw] = thumbnail
+
+    # Filename label di bawah thumbnail
+    cv2.putText(frame, "SAVED", (tx, ty + th + 14), cv2.FONT_HERSHEY_SIMPLEX,
+                0.3, (100, 255, 100), 1, cv2.LINE_AA)
+
+
+def draw_screenshot_flash(frame, flash_level):
+    """Flash putih saat screenshot."""
+    if flash_level > 0.01:
+        white = np.ones_like(frame, dtype=np.uint8) * 255
+        return cv2.addWeighted(white, flash_level * 0.8, frame, 1 - flash_level * 0.8, 0)
+    return frame
+
+
+# ==========================================
+#  ⏺️ Video Recording Helper (BARU - Fitur 16)
+# ==========================================
+
+def draw_recording_indicator(frame, is_recording, rec_duration, blink_on=True):
+    """Gambar indikator recording: titik merah berkedip + timer + border."""
+    if not is_recording:
+        return
+    h, w = frame.shape[:2]
+
+    # Titik merah berkedip
+    if blink_on:
+        cv2.circle(frame, (w - 25, 25), 8, (0, 0, 255), cv2.FILLED)
+    cv2.putText(frame, "REC", (w - 65, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, (0, 0, 255), 2, cv2.LINE_AA)
+
+    # Timer durasi
+    minutes = int(rec_duration) // 60
+    seconds = int(rec_duration) % 60
+    timer_str = f"{minutes:02d}:{seconds:02d}"
+    cv2.putText(frame, timer_str, (w - 65, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4, (200, 200, 200), 1, cv2.LINE_AA)
+
+    # Border merah tipis di sekeliling frame
+    cv2.rectangle(frame, (2, 2), (w - 2, h - 2), (0, 0, 180), 2)
+
+
+def draw_save_notification(frame, display_time, filepath):
+    """Tampilkan notifikasi 'VIDEO SAVED' setelah stop recording."""
+    if display_time <= 0:
+        return
+    h, w = frame.shape[:2]
+    alpha = min(1.0, display_time)
+
+    # Box notifikasi di tengah atas
+    box_w = 280
+    box_h = 50
+    bx = (w - box_w) // 2
+    by = 10
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (bx, by), (bx + box_w, by + box_h), (20, 60, 20), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.85 * alpha, frame, 1 - 0.85 * alpha, 0, frame)
+    cv2.rectangle(frame, (bx, by), (bx + box_w, by + box_h),
+                  (0, int(200 * alpha), 0), 1, cv2.LINE_AA)
+
+    color = (0, int(255 * alpha), 0)
+    cv2.putText(frame, "VIDEO SAVED!", (bx + 75, by + 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+    filename = os.path.basename(filepath) if filepath else ""
+    cv2.putText(frame, filename, (bx + 20, by + 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (int(150 * alpha), int(150 * alpha), int(150 * alpha)),
+                1, cv2.LINE_AA)
+
+
+# ==========================================
+#  Common UI Helpers
+# ==========================================
+
 def lerp(a, b, t):
     """Linear interpolation antara a dan b dengan faktor t."""
     return a + (b - a) * t
@@ -901,7 +1460,7 @@ def draw_active_gesture_label(frame, gesture_name, gesture_color):
 def draw_info_panel(frame):
     """Gambar panel info gesture semi-transparan di tengah layar."""
     h, w = frame.shape[:2]
-    pw, ph = 320, 320
+    pw, ph = 360, 440
     px = (w - pw) // 2
     py = (h - ph) // 2
 
@@ -912,11 +1471,15 @@ def draw_info_panel(frame):
     cv2.rectangle(frame, (px, py), (px + pw, py + ph), (100, 200, 255), 2, cv2.LINE_AA)
 
     # Title
-    cv2.putText(frame, "GESTURE GUIDE", (px + 80, py + 28),
+    cv2.putText(frame, "GESTURE GUIDE", (px + 95, py + 28),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 200, 255), 2, cv2.LINE_AA)
     cv2.line(frame, (px + 10, py + 38), (px + pw - 10, py + 38), (80, 80, 80), 1)
 
-    gestures = [
+    # Subtitle - 1 Tangan
+    cv2.putText(frame, "[1 TANGAN]", (px + 15, py + 56),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+
+    gestures_1h = [
         ("Peace (V)", "Blur Screen", (255, 200, 100)),
         ("Thumb+Index", "Blur Area", (200, 200, 100)),
         ("Rock Sign", "Glitch/VHS", (100, 100, 255)),
@@ -924,21 +1487,67 @@ def draw_info_panel(frame):
         ("Pinky Only", "Color Invert", (180, 120, 255)),
         ("Fist", "Night Vision", (0, 200, 0)),
         ("Open Palm", "Freeze Frame", (200, 200, 200)),
-        ("Triangle (2H)", "Grayscale", (200, 200, 200)),
-        ("Heart (2H)", "Love Effect", (100, 80, 255)),
-        ("Rectangle (2H)", "Anime Filter", (255, 255, 100)),
+        ("Middle Only", "Thermal", (0, 180, 255)),
+        ("Ring Only", "Underwater", (200, 150, 50)),
+        ("Thumb Only", "Slow-Mo Replay", (180, 180, 255)),
+        ("I+M+R Fingers", "Color Pop", (100, 200, 255)),
     ]
 
-    y_start = py + 58
-    line_h = 24
-    for i, (gesture, effect, c) in enumerate(gestures):
+    y_start = py + 72
+    line_h = 20
+    for i, (gesture, effect, c) in enumerate(gestures_1h):
         y_pos = y_start + i * line_h
         cv2.putText(frame, gesture, (px + 15, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, c, 1, cv2.LINE_AA)
-        cv2.putText(frame, effect, (px + 175, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, c, 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 190, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
 
-    cv2.putText(frame, "Press H to hide | Q to quit", (px + 45, py + ph - 12),
+    # Separator
+    sep_y = y_start + len(gestures_1h) * line_h + 5
+    cv2.line(frame, (px + 10, sep_y), (px + pw - 10, sep_y), (80, 80, 80), 1)
+
+    # Subtitle - 2 Tangan
+    cv2.putText(frame, "[2 TANGAN]", (px + 15, sep_y + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+
+    gestures_2h = [
+        ("Triangle", "Grayscale", (200, 200, 200)),
+        ("Heart", "Love Effect", (100, 80, 255)),
+        ("Rectangle", "Anime Filter", (255, 255, 100)),
+    ]
+
+    y_start_2h = sep_y + 34
+    for i, (gesture, effect, c) in enumerate(gestures_2h):
+        y_pos = y_start_2h + i * line_h
+        cv2.putText(frame, gesture, (px + 15, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 190, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
+
+    # Separator
+    sep_y2 = y_start_2h + len(gestures_2h) * line_h + 5
+    cv2.line(frame, (px + 10, sep_y2), (px + pw - 10, sep_y2), (80, 80, 80), 1)
+
+    # Subtitle - Keyboard
+    cv2.putText(frame, "[KEYBOARD]", (px + 15, sep_y2 + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+
+    keyboard_shortcuts = [
+        ("S", "Screenshot", (100, 255, 100)),
+        ("R", "Record Video", (100, 100, 255)),
+        ("H", "Toggle Help", (150, 150, 150)),
+        ("Q", "Quit", (150, 150, 150)),
+    ]
+
+    y_start_kb = sep_y2 + 34
+    for i, (key, effect, c) in enumerate(keyboard_shortcuts):
+        y_pos = y_start_kb + i * line_h
+        cv2.putText(frame, f"[{key}]", (px + 15, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 190, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
+
+    cv2.putText(frame, "Press H to hide", (px + 110, py + ph - 12),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
 
 
@@ -996,7 +1605,7 @@ def draw_startup_splash(frame, alpha):
     cv2.putText(frame, sub, (sx, sy), cv2.FONT_HERSHEY_SIMPLEX,
                 0.6, s_color, 1, cv2.LINE_AA)
 
-    ver = "v2.0 | 10 Gestures | Press H for help"
+    ver = "v3.0 | 16 Gestures | Press H for help"
     v_size = cv2.getTextSize(ver, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)[0]
     vx = (w - v_size[0]) // 2
     v_color = (int(80*title_alpha), int(80*title_alpha), int(80*title_alpha))
@@ -1015,8 +1624,13 @@ def main():
     # Detektor tangan: butuh 2 tangan untuk gesture segitiga & love
     detector = HandDetector(detectionCon=0.7, maxHands=2)
 
+    # Folder captures
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    captures_dir = os.path.join(script_dir, "captures")
+    os.makedirs(captures_dir, exist_ok=True)
+
     print("=" * 55)
-    print("  GESTURE CAMERA - ULTIMATE EDITION (10 Gestures)")
+    print("  GESTURE CAMERA - ULTIMATE EDITION (16 Gestures)")
     print("=" * 55)
     print("  Jari & landmark tangan terdeteksi otomatis")
     print("  -----------------------------------------------")
@@ -1028,13 +1642,21 @@ def main():
     print("  Kelingking Saja       : Color Invert")
     print("  Kepalan Tangan        : Night Vision")
     print("  Telapak Terbuka       : Freeze Frame")
+    print("  Jari Tengah Saja      : Thermal Vision")
+    print("  Jari Manis Saja       : Underwater Effect")
+    print("  Jempol Saja           : Slow Motion Replay")
+    print("  Telunjuk+Tengah+Manis : Color Pop")
     print("  -----------------------------------------------")
     print("  [2 TANGAN]")
     print("  Segitiga              : Grayscale")
     print("  Love / Heart          : Efek Hati")
     print("  Kotak (tangan buka)   : Anime Filter")
     print("  -----------------------------------------------")
-    print("  Tekan 'Q' untuk keluar")
+    print("  [KEYBOARD]")
+    print("  S                     : Screenshot")
+    print("  R                     : Record / Stop Video")
+    print("  H                     : Toggle Help")
+    print("  Q                     : Quit")
     print("=" * 55)
 
     # Smooth transition untuk blur & grayscale
@@ -1091,6 +1713,49 @@ def main():
     invert_level = 0.0
     invert_speed = 0.12
 
+    # === BARU: Thermal Vision state ===
+    thermal_level = 0.0
+    thermal_speed = 0.12
+
+    # === BARU: Underwater state ===
+    underwater_level = 0.0
+    underwater_speed = 0.10
+    bubble_particles = []
+    bubbles_initialized = False
+
+    # === BARU: Slow Motion Replay state ===
+    frame_buffer = deque(maxlen=60)  # Circular buffer 60 frame
+    slowmo_active = False
+    slowmo_replay_index = 0
+    slowmo_replay_frames = []
+    slowmo_sub_frame = 0  # Sub-frame counter untuk kecepatan 1/3
+    slowmo_cooldown = 0
+
+    # === BARU: Color Pop state ===
+    color_pop_level = 0.0
+    color_pop_speed = 0.12
+    color_pop_hand = None  # Hand data saat color pop aktif
+
+    # === BARU: Screenshot state ===
+    screenshot_flash = 0.0
+    screenshot_thumbnail = None
+    screenshot_display_time = 0.0
+    screenshot_filepath = ""
+    screenshot_count = 0
+
+    # === BARU: Video Recording state ===
+    is_recording = False
+    video_writer = None
+    rec_start_time = 0
+    rec_save_notification_time = 0.0
+    rec_saved_filepath = ""
+
+    # UI state
+    show_help = False
+    frame_count = 0
+    splash_alpha = 1.0
+    start_time = time.time()
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -1099,6 +1764,16 @@ def main():
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
         current_time = time.time()
+        frame_count += 1
+
+        # Initialize bubble particles once we know frame dimensions
+        if not bubbles_initialized:
+            bubble_particles = [BubbleParticle(w, h) for _ in range(25)]
+            bubbles_initialized = True
+
+        # Buffer frame untuk slow-mo (sebelum efek diterapkan)
+        if not slowmo_active:
+            frame_buffer.append(frame.copy())
 
         # Deteksi tangan (draw=False, kita gambar sendiri biar lebih bagus)
         hands, frame = detector.findHands(frame, draw=False)
@@ -1119,6 +1794,12 @@ def main():
         spotlight_detected = False
         spotlight_pos = None
         pinky_detected = False
+        # === BARU ===
+        middle_detected = False     # Jari tengah saja → Thermal
+        ring_detected = False       # Jari manis saja → Underwater
+        thumb_only_detected = False # Jempol saja → Slow-mo
+        three_fingers_detected = False  # Telunjuk+Tengah+Manis → Color Pop
+        three_fingers_hand = None
 
         if hands:
             # Gambar landmark untuk setiap tangan yang terdeteksi
@@ -1161,25 +1842,42 @@ def main():
                     if x_max - x_min > 20 and y_max - y_min > 20:
                         box_coords = (x_min, y_min, x_max, y_max)
 
-                # LOGIKA 6: Rock Sign (Telunjuk + Kelingking UP) → Glitch/VHS
+                # LOGIKA 3: Rock Sign (Telunjuk + Kelingking UP) → Glitch/VHS
                 elif fingers == [0, 1, 0, 0, 1] or fingers == [1, 1, 0, 0, 1]:
                     rock_detected = True
 
-                # LOGIKA 7: Telunjuk Saja → Spotlight
+                # LOGIKA 14 (BARU): Telunjuk + Tengah + Manis → Color Pop
+                elif fingers == [0, 1, 1, 1, 0]:
+                    three_fingers_detected = True
+                    three_fingers_hand = hand1
+
+                # LOGIKA 4: Telunjuk Saja → Spotlight
                 elif fingers == [0, 1, 0, 0, 0]:
                     spotlight_detected = True
                     lmList = hand1["lmList"]
                     spotlight_pos = (lmList[8][0], lmList[8][1])
 
-                # LOGIKA 8: Kelingking Saja → Color Invert
+                # LOGIKA 11 (BARU): Jari Tengah Saja → Thermal Vision
+                elif fingers == [0, 0, 1, 0, 0]:
+                    middle_detected = True
+
+                # LOGIKA 12 (BARU): Jari Manis Saja → Underwater
+                elif fingers == [0, 0, 0, 1, 0]:
+                    ring_detected = True
+
+                # LOGIKA 5: Kelingking Saja → Color Invert
                 elif fingers == [0, 0, 0, 0, 1]:
                     pinky_detected = True
 
-                # LOGIKA 9: Kepalan Tangan → Night Vision
+                # LOGIKA 13 (BARU): Jempol Saja → Slow Motion Replay
+                elif fingers == [1, 0, 0, 0, 0]:
+                    thumb_only_detected = True
+
+                # LOGIKA 6: Kepalan Tangan → Night Vision
                 elif fingers == [0, 0, 0, 0, 0]:
                     fist_detected = True
 
-                # LOGIKA 10: Telapak Terbuka (1 tangan saja) → Freeze Frame
+                # LOGIKA 7: Telapak Terbuka (1 tangan saja) → Freeze Frame
                 elif sum(fingers) >= 5 and len(hands) == 1:
                     palm_detected = True
 
@@ -1487,6 +2185,83 @@ def main():
             frame = apply_color_invert(frame, invert_level)
             draw_invert_border(frame, invert_level)
 
+        # ====================================================
+        # FITUR BARU (11-14)
+        # ====================================================
+
+        # 11. 🔥 Thermal Vision (Jari Tengah Saja)
+        if middle_detected:
+            thermal_level = min(1.0, thermal_level + thermal_speed)
+        else:
+            thermal_level = max(0.0, thermal_level - thermal_speed)
+
+        if thermal_level > 0.01:
+            frame = apply_thermal_vision(frame, thermal_level)
+            draw_thermal_hud(frame, thermal_level)
+
+        # 12. 🌊 Underwater (Jari Manis Saja)
+        if ring_detected:
+            underwater_level = min(1.0, underwater_level + underwater_speed)
+        else:
+            underwater_level = max(0.0, underwater_level - underwater_speed)
+
+        if underwater_level > 0.01:
+            frame = apply_underwater_effect(frame, underwater_level, current_time)
+            draw_underwater_hud(frame, underwater_level, current_time)
+            # Update dan gambar gelembung
+            for bubble in bubble_particles:
+                bubble.update(current_time)
+                bubble.draw(frame, underwater_level)
+
+        # 13. 🎬 Slow Motion Replay (Jempol Saja)
+        if thumb_only_detected and not slowmo_active and len(frame_buffer) >= 10 and \
+                (current_time - slowmo_cooldown) > 2.0:
+            # Mulai replay
+            slowmo_active = True
+            slowmo_replay_frames = list(frame_buffer)
+            slowmo_replay_index = 0
+            slowmo_sub_frame = 0
+
+        if slowmo_active:
+            if slowmo_replay_index < len(slowmo_replay_frames):
+                # Tampilkan frame replay
+                replay_frame = slowmo_replay_frames[slowmo_replay_index].copy()
+                total = len(slowmo_replay_frames)
+                progress = slowmo_replay_index / max(1, total - 1)
+
+                # Motion trail: blend dengan frame sebelumnya
+                if slowmo_replay_index > 0:
+                    prev_frame = slowmo_replay_frames[slowmo_replay_index - 1]
+                    replay_frame = cv2.addWeighted(replay_frame, 0.7, prev_frame, 0.3, 0)
+
+                draw_slowmo_overlay(replay_frame, progress, slowmo_replay_index, total)
+                frame = replay_frame
+
+                # Kecepatan 1/3 (setiap frame ditampilkan 3x)
+                slowmo_sub_frame += 1
+                if slowmo_sub_frame >= 3:
+                    slowmo_sub_frame = 0
+                    slowmo_replay_index += 1
+            else:
+                # Replay selesai
+                slowmo_active = False
+                slowmo_cooldown = current_time
+
+        # 14. 🌈 Color Pop (Telunjuk + Tengah + Manis)
+        if three_fingers_detected and three_fingers_hand is not None:
+            color_pop_level = min(1.0, color_pop_level + color_pop_speed)
+            color_pop_hand = three_fingers_hand
+        else:
+            color_pop_level = max(0.0, color_pop_level - color_pop_speed)
+
+        if color_pop_level > 0.01 and color_pop_hand is not None:
+            frame = apply_color_pop(frame, color_pop_hand, color_pop_level)
+            draw_color_pop_overlay(frame, color_pop_level)
+
+        # ====================================================
+        # OVERLAY VISUAL (segitiga, border, dll)
+        # ====================================================
+
         # Gambar segitiga jika terdeteksi
         if triangle_detected and triangle_pts:
             pts = triangle_pts
@@ -1504,12 +2279,156 @@ def main():
                 cv2.circle(frame, pt, 10, (0, 255, 255), cv2.FILLED)
                 cv2.circle(frame, pt, 12, (255, 255, 255), 2, cv2.LINE_AA)
 
+        # Box blur border
+        if box_blur_detected and box_coords:
+            draw_box_blur_border(frame, *box_coords)
+
+        # ====================================================
+        # SCREENSHOT & RECORDING
+        # ====================================================
+
+        # 15. Screenshot flash
+        if screenshot_flash > 0.01:
+            frame = draw_screenshot_flash(frame, screenshot_flash)
+            screenshot_flash *= 0.7
+
+        # Screenshot thumbnail display
+        if screenshot_thumbnail is not None:
+            elapsed_ss = current_time - screenshot_display_time
+            if elapsed_ss < 3.0:
+                draw_screenshot_thumbnail(frame, screenshot_thumbnail,
+                                          elapsed_ss, screenshot_filepath)
+            else:
+                screenshot_thumbnail = None
+
+        # 16. Recording indicator
+        if is_recording:
+            rec_duration = current_time - rec_start_time
+            blink = int(current_time * 2) % 2 == 0
+            draw_recording_indicator(frame, True, rec_duration, blink)
+            # Write frame to video
+            if video_writer is not None:
+                video_writer.write(frame)
+
+        # Save notification setelah stop recording
+        if rec_save_notification_time > 0:
+            remaining = 3.0 - (current_time - rec_save_notification_time)
+            if remaining > 0:
+                draw_save_notification(frame, remaining, rec_saved_filepath)
+            else:
+                rec_save_notification_time = 0
+
+        # Screenshot counter (kecil di pojok)
+        if screenshot_count > 0:
+            cv2.putText(frame, f"Photos: {screenshot_count}", (w - 100, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
+
+        # ====================================================
+        # UI OVERLAY
+        # ====================================================
+
+        # Startup splash (fade out selama 3 detik pertama)
+        elapsed_start = current_time - start_time
+        if elapsed_start < 3.0:
+            splash_alpha = max(0.0, 1.0 - elapsed_start / 3.0)
+            frame = draw_startup_splash(frame, splash_alpha)
+
+        # Help panel
+        if show_help:
+            draw_info_panel(frame)
+
+        # Active gesture label
+        gesture_name = ""
+        gesture_color = (200, 200, 200)
+        if peace_detected:
+            gesture_name = "BLUR"
+            gesture_color = (255, 200, 100)
+        elif box_blur_detected:
+            gesture_name = "BOX BLUR"
+            gesture_color = (200, 200, 100)
+        elif rock_detected:
+            gesture_name = "GLITCH"
+            gesture_color = (100, 100, 255)
+        elif spotlight_detected:
+            gesture_name = "SPOTLIGHT"
+            gesture_color = (200, 200, 100)
+        elif pinky_detected:
+            gesture_name = "NEGATIVE"
+            gesture_color = (180, 120, 255)
+        elif fist_detected:
+            gesture_name = "NIGHT VISION"
+            gesture_color = (0, 200, 0)
+        elif palm_detected:
+            gesture_name = "FREEZE"
+            gesture_color = (200, 200, 200)
+        elif triangle_detected:
+            gesture_name = "GRAYSCALE"
+            gesture_color = (200, 200, 200)
+        elif love_confirmed:
+            gesture_name = "LOVE"
+            gesture_color = (100, 80, 255)
+        elif rect_detected:
+            gesture_name = "ANIME"
+            gesture_color = (255, 255, 100)
+        elif middle_detected:
+            gesture_name = "THERMAL"
+            gesture_color = (0, 180, 255)
+        elif ring_detected:
+            gesture_name = "UNDERWATER"
+            gesture_color = (200, 150, 50)
+        elif thumb_only_detected or slowmo_active:
+            gesture_name = "SLOW-MO"
+            gesture_color = (180, 180, 255)
+        elif three_fingers_detected:
+            gesture_name = "COLOR POP"
+            gesture_color = (100, 200, 255)
+
+        if gesture_name:
+            draw_active_gesture_label(frame, gesture_name, gesture_color)
+
         cv2.imshow('Gesture Camera - Ultimate Edition', frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == ord('Q'):
             break
+        elif key == ord('h') or key == ord('H'):
+            show_help = not show_help
+        elif key == ord('s') or key == ord('S'):
+            # Screenshot!
+            filepath, filename = save_screenshot(frame, captures_dir)
+            screenshot_flash = 1.0
+            screenshot_count += 1
+            # Buat thumbnail (resize kecil)
+            thumb_h = 90
+            thumb_w = int(w * (thumb_h / h))
+            screenshot_thumbnail = cv2.resize(frame, (thumb_w, thumb_h))
+            screenshot_display_time = current_time
+            screenshot_filepath = filepath
+            print(f"  📸 Screenshot saved: {filepath}")
+        elif key == ord('r') or key == ord('R'):
+            if not is_recording:
+                # Start recording
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                rec_filename = f"recording_{timestamp}.avi"
+                rec_filepath = os.path.join(captures_dir, rec_filename)
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                video_writer = cv2.VideoWriter(rec_filepath, fourcc, 20.0, (w, h))
+                is_recording = True
+                rec_start_time = current_time
+                rec_saved_filepath = rec_filepath
+                print(f"  ⏺️  Recording started: {rec_filepath}")
+            else:
+                # Stop recording
+                is_recording = False
+                if video_writer is not None:
+                    video_writer.release()
+                    video_writer = None
+                rec_save_notification_time = current_time
+                print(f"  ⏹️  Recording saved: {rec_saved_filepath}")
 
+    # Cleanup
+    if video_writer is not None:
+        video_writer.release()
     cap.release()
     cv2.destroyAllWindows()
     print("\nKamera ditutup. Sampai jumpa!")
