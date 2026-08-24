@@ -4,7 +4,6 @@ import time
 import random
 import os
 import numpy as np
-from collections import deque
 from cvzone.HandTrackingModule import HandDetector
 
 # ==========================================
@@ -24,7 +23,6 @@ from cvzone.HandTrackingModule import HandDetector
 #  --- BARU ---
 # 11. Jari Tengah Saja = Thermal Vision
 # 12. Jari Manis Saja = Underwater Effect
-# 13. Jempol Saja = Slow Motion Replay
 # 14. Telunjuk+Tengah+Manis = Color Pop
 # 15. Keyboard S = Screenshot
 # 16. Keyboard R = Video Recording
@@ -1132,58 +1130,6 @@ def draw_underwater_hud(frame, level, time_val=0):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
 
 
-# ==========================================
-#  🎬 Slow Motion Replay (BARU - Fitur 13)
-# ==========================================
-
-def draw_slowmo_overlay(frame, replay_progress, replay_index, total_frames):
-    """Gambar overlay sinematik slow-motion: letterbox + label."""
-    h, w = frame.shape[:2]
-
-    # Cinematic letterbox bars (atas dan bawah)
-    bar_height = int(h * 0.08)
-    cv2.rectangle(frame, (0, 0), (w, bar_height), (0, 0, 0), cv2.FILLED)
-    cv2.rectangle(frame, (0, h - bar_height), (w, h), (0, 0, 0), cv2.FILLED)
-
-    # Label "SLOW-MO REPLAY" di bar atas
-    label_color = (180, 180, 255)
-    cv2.putText(frame, "SLOW-MO REPLAY", (15, bar_height - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, label_color, 1, cv2.LINE_AA)
-
-    # Playback icon (triangle ◀◀)
-    tri_x = w - 100
-    tri_y = bar_height - 15
-    pts1 = np.array([[tri_x, tri_y], [tri_x + 12, tri_y + 8], [tri_x, tri_y + 16]], dtype=np.int32)
-    pts2 = np.array([[tri_x + 14, tri_y], [tri_x + 26, tri_y + 8], [tri_x + 14, tri_y + 16]], dtype=np.int32)
-    cv2.fillPoly(frame, [pts1], label_color)
-    cv2.fillPoly(frame, [pts2], label_color)
-
-    # Progress bar di bar bawah
-    prog_y = h - bar_height + 8
-    prog_x = 15
-    prog_w = w - 30
-    prog_h = 4
-    cv2.rectangle(frame, (prog_x, prog_y), (prog_x + prog_w, prog_y + prog_h),
-                  (80, 80, 80), cv2.FILLED)
-    filled = int(prog_w * replay_progress)
-    cv2.rectangle(frame, (prog_x, prog_y), (prog_x + filled, prog_y + prog_h),
-                  label_color, cv2.FILLED)
-
-    # Frame counter
-    fc_text = f"{replay_index}/{total_frames}"
-    cv2.putText(frame, fc_text, (w - 80, h - bar_height + 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
-
-    # Blink "▶" indicator
-    if int(time.time() * 4) % 2 == 0:
-        cv2.putText(frame, "x0.3", (15, h - bar_height + 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1, cv2.LINE_AA)
-
-    # Motion trail effect - subtle blue tint
-    overlay = np.zeros_like(frame, dtype=np.uint8)
-    overlay[:, :] = (40, 15, 5)
-    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
-
 
 # ==========================================
 #  🌈 Color Pop / Selective Color (BARU - Fitur 14)
@@ -1489,7 +1435,6 @@ def draw_info_panel(frame):
         ("Open Palm", "Freeze Frame", (200, 200, 200)),
         ("Middle Only", "Thermal", (0, 180, 255)),
         ("Ring Only", "Underwater", (200, 150, 50)),
-        ("Thumb Only", "Slow-Mo Replay", (180, 180, 255)),
         ("I+M+R Fingers", "Color Pop", (100, 200, 255)),
     ]
 
@@ -1644,7 +1589,6 @@ def main():
     print("  Telapak Terbuka       : Freeze Frame")
     print("  Jari Tengah Saja      : Thermal Vision")
     print("  Jari Manis Saja       : Underwater Effect")
-    print("  Jempol Saja           : Slow Motion Replay")
     print("  Telunjuk+Tengah+Manis : Color Pop")
     print("  -----------------------------------------------")
     print("  [2 TANGAN]")
@@ -1723,13 +1667,6 @@ def main():
     bubble_particles = []
     bubbles_initialized = False
 
-    # === BARU: Slow Motion Replay state ===
-    frame_buffer = deque(maxlen=60)  # Circular buffer 60 frame
-    slowmo_active = False
-    slowmo_replay_index = 0
-    slowmo_replay_frames = []
-    slowmo_sub_frame = 0  # Sub-frame counter untuk kecepatan 1/3
-    slowmo_cooldown = 0
 
     # === BARU: Color Pop state ===
     color_pop_level = 0.0
@@ -1755,11 +1692,20 @@ def main():
     frame_count = 0
     splash_alpha = 1.0
     start_time = time.time()
+    consecutive_failures = 0
+    max_consecutive_failures = 30  # Toleransi frame drop berturut-turut
 
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
-            break
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                print("ERROR: Kamera tidak merespon setelah banyak percobaan. Keluar...")
+                break
+            # Frame drop biasa, skip dan coba lagi
+            time.sleep(0.01)
+            continue
+        consecutive_failures = 0  # Reset counter kalau berhasil baca frame
 
         frame = cv2.flip(frame, 1)
         h, w, _ = frame.shape
@@ -1771,12 +1717,11 @@ def main():
             bubble_particles = [BubbleParticle(w, h) for _ in range(25)]
             bubbles_initialized = True
 
-        # Buffer frame untuk slow-mo (sebelum efek diterapkan)
-        if not slowmo_active:
-            frame_buffer.append(frame.copy())
-
         # Deteksi tangan (draw=False, kita gambar sendiri biar lebih bagus)
-        hands, frame = detector.findHands(frame, draw=False)
+        try:
+            hands, frame = detector.findHands(frame, draw=False)
+        except Exception:
+            hands = []
 
         peace_detected = False
         box_blur_detected = False
@@ -1797,7 +1742,6 @@ def main():
         # === BARU ===
         middle_detected = False     # Jari tengah saja → Thermal
         ring_detected = False       # Jari manis saja → Underwater
-        thumb_only_detected = False # Jempol saja → Slow-mo
         three_fingers_detected = False  # Telunjuk+Tengah+Manis → Color Pop
         three_fingers_hand = None
 
@@ -1869,9 +1813,6 @@ def main():
                 elif fingers == [0, 0, 0, 0, 1]:
                     pinky_detected = True
 
-                # LOGIKA 13 (BARU): Jempol Saja → Slow Motion Replay
-                elif fingers == [1, 0, 0, 0, 0]:
-                    thumb_only_detected = True
 
                 # LOGIKA 6: Kepalan Tangan → Night Vision
                 elif fingers == [0, 0, 0, 0, 0]:
@@ -2064,8 +2005,8 @@ def main():
         heart_particles = alive_particles
 
         # Batasi jumlah partikel agar performa tetap oke
-        if len(heart_particles) > 200:
-            heart_particles = heart_particles[-200:]
+        if len(heart_particles) > 150:
+            heart_particles = heart_particles[-100:]
 
         # 5. 🎌 Efek Anime (Rectangle - kedua tangan terbuka)
         if rect_detected and rect_coords:
@@ -2213,39 +2154,6 @@ def main():
                 bubble.update(current_time)
                 bubble.draw(frame, underwater_level)
 
-        # 13. 🎬 Slow Motion Replay (Jempol Saja)
-        if thumb_only_detected and not slowmo_active and len(frame_buffer) >= 10 and \
-                (current_time - slowmo_cooldown) > 2.0:
-            # Mulai replay
-            slowmo_active = True
-            slowmo_replay_frames = list(frame_buffer)
-            slowmo_replay_index = 0
-            slowmo_sub_frame = 0
-
-        if slowmo_active:
-            if slowmo_replay_index < len(slowmo_replay_frames):
-                # Tampilkan frame replay
-                replay_frame = slowmo_replay_frames[slowmo_replay_index].copy()
-                total = len(slowmo_replay_frames)
-                progress = slowmo_replay_index / max(1, total - 1)
-
-                # Motion trail: blend dengan frame sebelumnya
-                if slowmo_replay_index > 0:
-                    prev_frame = slowmo_replay_frames[slowmo_replay_index - 1]
-                    replay_frame = cv2.addWeighted(replay_frame, 0.7, prev_frame, 0.3, 0)
-
-                draw_slowmo_overlay(replay_frame, progress, slowmo_replay_index, total)
-                frame = replay_frame
-
-                # Kecepatan 1/3 (setiap frame ditampilkan 3x)
-                slowmo_sub_frame += 1
-                if slowmo_sub_frame >= 3:
-                    slowmo_sub_frame = 0
-                    slowmo_replay_index += 1
-            else:
-                # Replay selesai
-                slowmo_active = False
-                slowmo_cooldown = current_time
 
         # 14. 🌈 Color Pop (Telunjuk + Tengah + Manis)
         if three_fingers_detected and three_fingers_hand is not None:
@@ -2376,15 +2284,13 @@ def main():
         elif ring_detected:
             gesture_name = "UNDERWATER"
             gesture_color = (200, 150, 50)
-        elif thumb_only_detected or slowmo_active:
-            gesture_name = "SLOW-MO"
-            gesture_color = (180, 180, 255)
         elif three_fingers_detected:
             gesture_name = "COLOR POP"
             gesture_color = (100, 200, 255)
 
         if gesture_name:
             draw_active_gesture_label(frame, gesture_name, gesture_color)
+
 
         cv2.imshow('Gesture Camera - Ultimate Edition', frame)
 
