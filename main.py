@@ -1884,10 +1884,14 @@ def main():
 
         # 2. Blur Area Kotak (Jempol & Telunjuk)
         if box_blur_detected and box_coords:
-            x_min, y_min, x_max, y_max = box_coords
-            roi = frame[y_min:y_max, x_min:x_max]
-            roi_blurred = cv2.GaussianBlur(roi, (71, 71), 0)
-            frame[y_min:y_max, x_min:x_max] = roi_blurred
+            try:
+                x_min, y_min, x_max, y_max = box_coords
+                roi = frame[y_min:y_max, x_min:x_max]
+                if roi.size > 0:
+                    roi_blurred = cv2.GaussianBlur(roi, (71, 71), 0)
+                    frame[y_min:y_max, x_min:x_max] = roi_blurred
+            except Exception:
+                pass
 
         # 3. Smooth transition grayscale (Segitiga)
         if triangle_detected:
@@ -2016,24 +2020,27 @@ def main():
             anime_level = max(0.0, anime_level - anime_speed * 0.5)
 
         if anime_level > 0.01 and anime_rect:
-            ax_min, ay_min, ax_max, ay_max = anime_rect
-            # Clamp ke batas frame
-            ax_min = max(0, ax_min)
-            ay_min = max(0, ay_min)
-            ax_max = min(w, ax_max)
-            ay_max = min(h, ay_max)
+            try:
+                ax_min, ay_min, ax_max, ay_max = anime_rect
+                # Clamp ke batas frame
+                ax_min = max(0, ax_min)
+                ay_min = max(0, ay_min)
+                ax_max = min(w, ax_max)
+                ay_max = min(h, ay_max)
 
-            if ax_max - ax_min > 10 and ay_max - ay_min > 10:
-                # Ambil ROI dan terapkan anime filter
-                roi = frame[ay_min:ay_max, ax_min:ax_max].copy()
-                anime_roi = apply_anime_filter(roi)
+                if ax_max - ax_min > 10 and ay_max - ay_min > 10:
+                    # Ambil ROI dan terapkan anime filter
+                    roi = frame[ay_min:ay_max, ax_min:ax_max].copy()
+                    anime_roi = apply_anime_filter(roi)
 
-                # Blend anime dengan original sesuai anime_level
-                blended = cv2.addWeighted(anime_roi, anime_level, roi, 1 - anime_level, 0)
-                frame[ay_min:ay_max, ax_min:ax_max] = blended
+                    # Blend anime dengan original sesuai anime_level
+                    blended = cv2.addWeighted(anime_roi, anime_level, roi, 1 - anime_level, 0)
+                    frame[ay_min:ay_max, ax_min:ax_max] = blended
 
-                # Gambar frame kotak bergaya anime
-                draw_anime_frame(frame, ax_min, ay_min, ax_max, ay_max, anime_level)
+                    # Gambar frame kotak bergaya anime
+                    draw_anime_frame(frame, ax_min, ay_min, ax_max, ay_max, anime_level)
+            except Exception:
+                pass
 
         # 6. Night Vision (Kepalan Tangan)
         if fist_detected:
@@ -2042,8 +2049,11 @@ def main():
             nv_level = max(0.0, nv_level - nv_speed)
 
         if nv_level > 0.01:
-            frame = apply_night_vision(frame, nv_level)
-            draw_night_vision_hud(frame, nv_level)
+            try:
+                frame = apply_night_vision(frame, nv_level)
+                draw_night_vision_hud(frame, nv_level)
+            except Exception:
+                pass
 
         # 7. Freeze Frame (Telapak Terbuka)
         if palm_detected and freeze_frame is None and (current_time - freeze_cooldown) > 1.0:
@@ -2100,8 +2110,11 @@ def main():
             glitch_level = max(0.0, glitch_level - glitch_speed)
 
         if glitch_level > 0.01:
-            frame = apply_glitch_effect(frame, glitch_level)
-            draw_glitch_hud(frame, glitch_level)
+            try:
+                frame = apply_glitch_effect(frame, glitch_level)
+                draw_glitch_hud(frame, glitch_level)
+            except Exception:
+                pass
 
         # 9. Spotlight (Telunjuk Saja)
         if spotlight_detected and spotlight_pos:
@@ -2111,10 +2124,13 @@ def main():
             spot_level = max(0.0, spot_level - spot_speed)
 
         if spot_level > 0.01:
-            frame = apply_spotlight(frame, spot_pos[0], spot_pos[1],
+            try:
+                frame = apply_spotlight(frame, spot_pos[0], spot_pos[1],
+                                        spot_radius, spot_level)
+                draw_spotlight_ring(frame, spot_pos[0], spot_pos[1],
                                     spot_radius, spot_level)
-            draw_spotlight_ring(frame, spot_pos[0], spot_pos[1],
-                                spot_radius, spot_level)
+            except Exception:
+                pass
 
         # 10. Color Invert (Kelingking Saja)
         if pinky_detected:
@@ -2123,8 +2139,11 @@ def main():
             invert_level = max(0.0, invert_level - invert_speed)
 
         if invert_level > 0.01:
-            frame = apply_color_invert(frame, invert_level)
-            draw_invert_border(frame, invert_level)
+            try:
+                frame = apply_color_invert(frame, invert_level)
+                draw_invert_border(frame, invert_level)
+            except Exception:
+                pass
 
         # ====================================================
         # FITUR BARU (11-14)
@@ -2137,8 +2156,11 @@ def main():
             thermal_level = max(0.0, thermal_level - thermal_speed)
 
         if thermal_level > 0.01:
-            frame = apply_thermal_vision(frame, thermal_level)
-            draw_thermal_hud(frame, thermal_level)
+            try:
+                frame = apply_thermal_vision(frame, thermal_level)
+                draw_thermal_hud(frame, thermal_level)
+            except Exception:
+                pass
 
         # 12. 🌊 Underwater (Jari Manis Saja)
         if ring_detected:
@@ -2147,12 +2169,15 @@ def main():
             underwater_level = max(0.0, underwater_level - underwater_speed)
 
         if underwater_level > 0.01:
-            frame = apply_underwater_effect(frame, underwater_level, current_time)
-            draw_underwater_hud(frame, underwater_level, current_time)
-            # Update dan gambar gelembung
-            for bubble in bubble_particles:
-                bubble.update(current_time)
-                bubble.draw(frame, underwater_level)
+            try:
+                frame = apply_underwater_effect(frame, underwater_level, current_time)
+                draw_underwater_hud(frame, underwater_level, current_time)
+                # Update dan gambar gelembung
+                for bubble in bubble_particles:
+                    bubble.update(current_time)
+                    bubble.draw(frame, underwater_level)
+            except Exception:
+                pass
 
 
         # 14. 🌈 Color Pop (Telunjuk + Tengah + Manis)
@@ -2163,8 +2188,11 @@ def main():
             color_pop_level = max(0.0, color_pop_level - color_pop_speed)
 
         if color_pop_level > 0.01 and color_pop_hand is not None:
-            frame = apply_color_pop(frame, color_pop_hand, color_pop_level)
-            draw_color_pop_overlay(frame, color_pop_level)
+            try:
+                frame = apply_color_pop(frame, color_pop_hand, color_pop_level)
+                draw_color_pop_overlay(frame, color_pop_level)
+            except Exception:
+                pass
 
         # ====================================================
         # OVERLAY VISUAL (segitiga, border, dll)
@@ -2290,7 +2318,6 @@ def main():
 
         if gesture_name:
             draw_active_gesture_label(frame, gesture_name, gesture_color)
-
 
         cv2.imshow('Gesture Camera - Ultimate Edition', frame)
 
