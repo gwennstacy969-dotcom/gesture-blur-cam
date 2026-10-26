@@ -139,3 +139,138 @@ def is_rectangle_gesture(hands, detector):
         return False, None
 
     return True, (x_min, y_min, x_max, y_max)
+
+def is_spiderman_gesture(hand, detector):
+    """
+    Deteksi pose Spider-Man (web shooter):
+    - Jempol: UP (1)
+    - Telunjuk: UP (1)
+    - Jari Tengah: DOWN (0)
+    - Jari Manis: DOWN (0)
+    - Kelingking: UP (1)
+    Returns: (detected: bool, origin: tuple(x, y), dir_vec: tuple(dx, dy), angle: float)
+    """
+    fingers = detector.fingersUp(hand)
+    if fingers != [1, 1, 0, 0, 1]:
+        return False, (0, 0), (0, 0), 0.0
+
+    lm = hand["lmList"]
+    # Titik keluar jaring: area tengah telapak tangan / dekat pergelangan tangan
+    w_x, w_y = lm[0][0], lm[0][1]
+    m_x, m_y = lm[9][0], lm[9][1]
+    origin = (int(w_x * 0.45 + m_x * 0.55), int(w_y * 0.45 + m_y * 0.55))
+
+    # Arah jaring: dari pergelangan tangan (lm[0]) menuju ujung telunjuk (lm[8]) dan kelingking (lm[20])
+    tip_x = (lm[8][0] + lm[20][0]) / 2.0
+    tip_y = (lm[8][1] + lm[20][1]) / 2.0
+    vx = tip_x - w_x
+    vy = tip_y - w_y
+    length = math.hypot(vx, vy)
+    if length < 1.0:
+        dir_vec = (0.0, -1.0)
+        angle = -math.pi / 2
+    else:
+        dir_vec = (vx / length, vy / length)
+        angle = math.atan2(dir_vec[1], dir_vec[0])
+
+    return True, origin, dir_vec, angle
+
+def analyze_face_expression(face):
+    """
+    Menganalisa ekspresi wajah dari 468 landmarks:
+    - 'senyum' : bibir melebar & sudut mulut naik (senyum ceria)
+    - 'sedih'  : sudut mulut turun / raut murung & sedih
+    - 'mangap' : mulut terbuka lebar (tertawa / mangap)
+    - 'neutral': ekspresi biasa
+    Returns: (expr_type: str, intensity: float, info: dict)
+    """
+    if not face or len(face) < 468:
+        return 'neutral', 0.0, {}
+
+    x33, y33 = face[33][0], face[33][1]
+    x263, y263 = face[263][0], face[263][1]
+    dx = x263 - x33
+    dy = y263 - y33
+    eye_dist = math.hypot(dx, dy)
+    if eye_dist < 15:
+        return 'neutral', 0.0, {}
+
+    # Normalisasi rotasi kepala (sudut garis mata)
+    angle = math.atan2(dy, dx)
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    mid_x = (x33 + x263) / 2.0
+    mid_y = (y33 + y263) / 2.0
+
+    def rot(pt):
+        rx = pt[0] - mid_x
+        ry = pt[1] - mid_y
+        return (rx * cos_a - ry * sin_a, rx * sin_a + ry * cos_a)
+
+    p61 = rot(face[61])    # Sudut mulut kiri
+    p291 = rot(face[291])  # Sudut mulut kanan
+    p13 = rot(face[13])    # Bibir atas dalam
+    p14 = rot(face[14])    # Bibir bawah dalam
+    p0 = rot(face[0])      # Bibir atas luar
+    p17 = rot(face[17])    # Bibir bawah luar
+
+    mouth_w = math.hypot(p291[0] - p61[0], p291[1] - p61[1])
+    mouth_h = abs(p14[1] - p13[1])
+    outer_mouth_h = abs(p17[1] - p0[1])
+
+    mouth_open_ratio = mouth_h / eye_dist
+    mouth_width_ratio = mouth_w / eye_dist
+
+    corners_y = (p61[1] + p291[1]) / 2.0
+    center_y = (p13[1] + p14[1]) / 2.0
+    # Positif jika sudut mulut terangkat ke atas (senyum)
+    corner_lift = (center_y - corners_y) / eye_dist
+
+    # Alis untuk indikator sedih
+    p107 = rot(face[107])
+    p70 = rot(face[70])
+    p336 = rot(face[336])
+    p300 = rot(face[300])
+    brow_inner_y = (p107[1] + p336[1]) / 2.0
+    brow_outer_y = (p70[1] + p300[1]) / 2.0
+    brow_sad_ratio = (brow_outer_y - brow_inner_y) / eye_dist
+
+    mouth_center_px = (int((face[13][0] + face[14][0]) // 2), int((face[13][1] + face[14][1]) // 2))
+    eyes_center_px = (int(mid_x), int(mid_y))
+    left_eye_px = (face[159][0], face[159][1])
+    right_eye_px = (face[386][0], face[386][1])
+    left_cheek_px = (face[234][0], face[234][1])
+    right_cheek_px = (face[454][0], face[454][1])
+    forehead_px = (face[10][0], face[10][1])
+
+    info = {
+        "mouth_center": mouth_center_px,
+        "eyes_center": eyes_center_px,
+        "left_eye": left_eye_px,
+        "right_eye": right_eye_px,
+        "left_cheek": left_cheek_px,
+        "right_cheek": right_cheek_px,
+        "forehead": forehead_px,
+        "eye_dist": eye_dist,
+        "mouth_w": mouth_w,
+        "mouth_h": mouth_h,
+        "mouth_open_ratio": mouth_open_ratio,
+        "corner_lift": corner_lift
+    }
+
+    # 1. Prioritas MANGAP (tertawa / mulut terbuka lebar)
+    if mouth_open_ratio > 0.19 or (outer_mouth_h / max(1, mouth_w) > 0.46):
+        intensity = min(1.0, (mouth_open_ratio - 0.16) / 0.18)
+        return 'mangap', max(0.3, intensity), info
+
+    # 2. SENYUM (sudut mulut naik & mulut melebar ceria)
+    if (corner_lift > 0.020 and mouth_width_ratio > 0.74) or (mouth_width_ratio > 0.82 and corner_lift > 0.005):
+        intensity = min(1.0, max((mouth_width_ratio - 0.74) / 0.15, (corner_lift - 0.015) / 0.04))
+        return 'senyum', max(0.3, intensity), info
+
+    # 3. SEDIH (sudut bibir turun ke bawah & raut murung/alis sedih)
+    if (corner_lift < -0.035) or (corner_lift < -0.018 and brow_sad_ratio > 0.030):
+        intensity = min(1.0, max((-corner_lift) / 0.045, brow_sad_ratio / 0.05))
+        return 'sedih', max(0.3, intensity), info
+
+    return 'neutral', 0.0, info

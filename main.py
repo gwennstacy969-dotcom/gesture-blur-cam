@@ -4,9 +4,13 @@ import random
 import os
 import numpy as np
 from cvzone.HandTrackingModule import HandDetector
+from cvzone.FaceMeshModule import FaceMeshDetector
 import math
 
-from core.gestures import is_heart_gesture, is_rectangle_gesture, is_triangle, distance
+from core.gestures import (
+    is_heart_gesture, is_rectangle_gesture, is_triangle, distance,
+    is_spiderman_gesture, analyze_face_expression
+)
 from core.effects import (
     apply_anime_filter, apply_night_vision, apply_glitch_effect, apply_spotlight,
     apply_color_invert, apply_thermal_vision, apply_underwater_effect, apply_color_pop
@@ -17,7 +21,8 @@ from core.ui import (
     draw_thermal_hud, BubbleParticle, draw_underwater_hud, draw_color_pop_overlay,
     save_screenshot, draw_screenshot_thumbnail, draw_screenshot_flash, draw_recording_indicator,
     draw_save_notification, draw_fps_counter, draw_active_gesture_label, draw_info_panel,
-    draw_box_blur_border, draw_startup_splash, generate_heart_points
+    draw_box_blur_border, draw_startup_splash, generate_heart_points,
+    EmojiParticle, draw_spiderman_web, draw_expression_hud, draw_expression_prediction_gauge
 )
 
 def main():
@@ -28,6 +33,8 @@ def main():
 
     # Detektor tangan: butuh 2 tangan untuk gesture segitiga & love
     detector = HandDetector(detectionCon=0.7, maxHands=2)
+    # Detektor wajah & ekspresi (senyum, sedih, mangap)
+    face_detector = FaceMeshDetector(maxFaces=1, minDetectionCon=0.5, minTrackCon=0.5)
 
     # Folder captures
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,11 +42,12 @@ def main():
     os.makedirs(captures_dir, exist_ok=True)
 
     print("=" * 55)
-    print("  GESTURE CAMERA - ULTIMATE EDITION (16 Gestures)")
+    print("  GESTURE CAMERA - ULTIMATE EDITION + FACE & SPIDER-MAN")
     print("=" * 55)
-    print("  Jari & landmark tangan terdeteksi otomatis")
+    print("  Jari & landmark wajah/tangan terdeteksi otomatis")
     print("  -----------------------------------------------")
     print("  [1 TANGAN]")
+    print("  Spiderman (🤟)        : Jaring Laba-laba Sesuai Arah Tangan 🕸️")
     print("  Peace Sign (V)        : Blur Full Screen")
     print("  Jempol & Telunjuk     : Blur Area Kotak")
     print("  Rock Sign (metal)     : Glitch / VHS Effect")
@@ -55,6 +63,11 @@ def main():
     print("  Segitiga              : Grayscale")
     print("  Love / Heart          : Efek Hati")
     print("  Kotak (tangan buka)   : Anime Filter")
+    print("  -----------------------------------------------")
+    print("  [DETEKSI WAJAH]")
+    print("  Senyum (Smile)        : Emot Senyum Berterbangan & Blush 😊")
+    print("  Raut Sedih (Sad)      : Emot Sedih & Air Mata Bertebaran 😢")
+    print("  Mangap (Mulut Buka)   : Efek Ketawa HAHAHA & Emot Ngakak 😂")
     print("  -----------------------------------------------")
     print("  [KEYBOARD]")
     print("  S                     : Screenshot")
@@ -133,6 +146,26 @@ def main():
     color_pop_speed = 0.12
     color_pop_hand = None  # Hand data saat color pop aktif
 
+    # === BARU: Spiderman Web state ===
+    spiderman_level = 0.0
+    spiderman_speed = 0.22
+    spiderman_origin = None
+    spiderman_dir = (0.0, -1.0)
+
+    # === BARU: Face Expression Prediction & Anti-Spam state ===
+    smile_level = 0.0
+    sad_level = 0.0
+    mangap_level = 0.0
+    expr_speed = 0.16
+    emoji_particles = []
+
+    # State mesin prediksi ekspresi (Hold to confirm - anti spam)
+    expr_predicting = None        # 'senyum', 'sedih', 'mangap', atau None
+    expr_predict_start = 0.0      # waktu mulai mendeteksi ekspresi
+    expr_hold_duration = 0.50     # tahan selama 0.50 detik untuk konfirmasi
+    expr_confirmed = False        # apakah sudah terkonfirmasi
+    expr_cooldown_until = 0.0     # waktu batas cooldown sebelum burst berikutnya
+
     # === BARU: Screenshot state ===
     screenshot_flash = 0.0
     screenshot_thumbnail = None
@@ -180,11 +213,26 @@ def main():
             bubble_particles = [BubbleParticle(w, h) for _ in range(25)]
             bubbles_initialized = True
 
+        # Deteksi Wajah & Ekspresi (Senyum, Sedih, Mangap)
+        face_expr_detected = 'neutral'
+        face_expr_intensity = 0.0
+        face_info = {}
+        try:
+            _, faces = face_detector.findFaceMesh(frame, draw=False)
+            if faces:
+                face_expr_detected, face_expr_intensity, face_info = analyze_face_expression(faces[0])
+        except Exception:
+            faces = []
+
         # Deteksi tangan (draw=False, kita gambar sendiri biar lebih bagus)
         try:
             hands, frame = detector.findHands(frame, draw=False)
         except Exception:
             hands = []
+
+        spiderman_detected = False
+        spiderman_origin_frame = None
+        spiderman_dir_frame = (0.0, -1.0)
 
         peace_detected = False
         box_blur_detected = False
@@ -215,6 +263,15 @@ def main():
                 color = hand_colors[i % len(hand_colors)]
                 draw_hand_landmarks(frame, hand, color)
 
+            # Cek Spider-Man pose pada setiap tangan yang terdeteksi
+            for hand in hands:
+                is_spidey, s_orig, s_dir, _ = is_spiderman_gesture(hand, detector)
+                if is_spidey:
+                    spiderman_detected = True
+                    spiderman_origin_frame = s_orig
+                    spiderman_dir_frame = s_dir
+                    break
+
             # --- Deteksi gesture 2 tangan ---
             if len(hands) == 2:
                 # Cek rectangle/anime dulu (kedua tangan buka semua jari)
@@ -225,7 +282,7 @@ def main():
                     love_raw_detected, love_center, love_size = is_heart_gesture(hands, detector)
 
             # --- Gesture 1 tangan (ambil tangan pertama) ---
-            if not love_raw_detected and not rect_detected:
+            if not love_raw_detected and not rect_detected and not spiderman_detected:
                 hand1 = hands[0]
                 fingers = detector.fingersUp(hand1)
 
@@ -249,8 +306,8 @@ def main():
                     if x_max - x_min > 20 and y_max - y_min > 20:
                         box_coords = (x_min, y_min, x_max, y_max)
 
-                # LOGIKA 3: Rock Sign (Telunjuk + Kelingking UP) → Glitch/VHS
-                elif fingers == [0, 1, 0, 0, 1] or fingers == [1, 1, 0, 0, 1]:
+                # LOGIKA 3: Rock Sign (Telunjuk + Kelingking UP, Jempol ditekuk) → Glitch/VHS
+                elif fingers == [0, 1, 0, 0, 1]:
                     rock_detected = True
 
                 # LOGIKA 14 (BARU): Telunjuk + Tengah + Manis → Color Pop
@@ -614,6 +671,114 @@ def main():
                 pass
 
         # ====================================================
+        # FITUR BARU: SPIDER-MAN WEB & EKSPRESI WAJAH
+        # ====================================================
+
+        # 15. 🕸️ Spider-Man Web Shooter (Pose 🤟 Sesuai Arah Tangan)
+        if spiderman_detected and spiderman_origin_frame:
+            spiderman_level = min(1.0, spiderman_level + spiderman_speed)
+            spiderman_origin = spiderman_origin_frame
+            spiderman_dir = spiderman_dir_frame
+        else:
+            spiderman_level = max(0.0, spiderman_level - spiderman_speed * 1.5)
+
+        if spiderman_level > 0.01 and spiderman_origin:
+            try:
+                draw_spiderman_web(frame, spiderman_origin, spiderman_dir, current_time, progress=spiderman_level)
+            except Exception:
+                pass
+
+        # 16. 😊😢😂 Deteksi Ekspresi Wajah: PREDIKSI DULU & ANTI-SPAM
+        if face_expr_detected in ('senyum', 'sedih', 'mangap'):
+            # Jika ekspresi berbeda dari yang sedang diprediksi, mulai hitung waktu baru
+            if expr_predicting != face_expr_detected:
+                expr_predicting = face_expr_detected
+                expr_predict_start = current_time
+                expr_confirmed = False
+
+            hold_elapsed = current_time - expr_predict_start
+            hold_progress = min(1.0, hold_elapsed / expr_hold_duration)
+
+            # Naikkan level visual ekspresi secara halus
+            if face_expr_detected == 'senyum':
+                smile_level = min(1.0, smile_level + expr_speed)
+                sad_level = max(0.0, sad_level - expr_speed)
+                mangap_level = max(0.0, mangap_level - expr_speed)
+            elif face_expr_detected == 'sedih':
+                sad_level = min(1.0, sad_level + expr_speed)
+                smile_level = max(0.0, smile_level - expr_speed)
+                mangap_level = max(0.0, mangap_level - expr_speed)
+            elif face_expr_detected == 'mangap':
+                mangap_level = min(1.0, mangap_level + expr_speed * 1.2)
+                smile_level = max(0.0, smile_level - expr_speed)
+                sad_level = max(0.0, sad_level - expr_speed)
+
+            # TAMPILKAN GAUGE PREDIKSI SELAMA PROSES ANALISA (PREDIKSI DULU)
+            if not expr_confirmed and face_info:
+                draw_expression_prediction_gauge(frame, expr_predicting, hold_progress, face_info, current_time)
+
+            # SETELAH TERPREDIKSI STABIL (>= 1.0) & BELUM DIKONFIRMASI:
+            # TRIGGER SEKALI (BURST) & AKTIFKAN COOLDOWN AGAR TIDAK SPAM!
+            if hold_progress >= 1.0 and not expr_confirmed:
+                if current_time >= expr_cooldown_until:
+                    expr_confirmed = True
+                    expr_cooldown_until = current_time + 2.5  # Cooldown 2.5 detik
+
+                    # 1. Burst Senyum (6-8 emot melayang lembut)
+                    if expr_predicting == 'senyum' and face_info:
+                        fc = face_info.get("eyes_center", (w // 2, h // 2))
+                        ed = int(face_info.get("eye_dist", 60))
+                        for _ in range(7):
+                            sx = fc[0] + random.randint(-ed * 2, ed * 2)
+                            sy = fc[1] + random.randint(-ed, ed // 2)
+                            em = random.choice(['😊', '😁', '🥰', '✨'])
+                            emoji_particles.append(EmojiParticle(sx, sy, em, mode="senyum", frame_w=w, frame_h=h))
+
+                    # 2. Burst Sedih (7-8 emot bertebaran turun dari atas)
+                    elif expr_predicting == 'sedih':
+                        for _ in range(8):
+                            sx = random.randint(30, w - 30)
+                            sy = random.randint(-30, h // 3)
+                            em = random.choice(['😢', '😭', '🥺', '💧'])
+                            emoji_particles.append(EmojiParticle(sx, sy, em, mode="sedih", frame_w=w, frame_h=h))
+
+                    # 3. Burst Mangap (7-8 emot tawa meletup keluar dari mulut)
+                    elif expr_predicting == 'mangap' and face_info:
+                        mc = face_info.get("mouth_center", (w // 2, h // 2))
+                        for _ in range(8):
+                            em = random.choice(['😂', '🤣', '😆', '✨'])
+                            emoji_particles.append(EmojiParticle(mc[0], mc[1], em, mode="mangap", frame_w=w, frame_h=h))
+
+        else:
+            # Wajah kembali netral: reset status prediksi
+            expr_predicting = None
+            expr_predict_start = 0.0
+            expr_confirmed = False
+            smile_level = max(0.0, smile_level - 0.08)
+            sad_level = max(0.0, sad_level - 0.08)
+            mangap_level = max(0.0, mangap_level - 0.10)
+
+        # Visual overlay ekspresi (blush, air mata, gelombang suara tawa) saat sudah terkonfirmasi
+        max_expr_level = max(smile_level, sad_level, mangap_level)
+        if max_expr_level > 0.15 and expr_confirmed:
+            active_expr = "senyum" if smile_level >= max(sad_level, mangap_level) else ("sedih" if sad_level >= mangap_level else "mangap")
+            try:
+                draw_expression_hud(frame, active_expr, max_expr_level, face_info, current_time)
+            except Exception:
+                pass
+
+        # Update & render emoji particles (maksimal 30 partikel agar layar bersih)
+        alive_emojis = []
+        for ep in emoji_particles:
+            ep.update(current_time)
+            if ep.is_alive():
+                ep.draw(frame)
+                alive_emojis.append(ep)
+        emoji_particles = alive_emojis
+        if len(emoji_particles) > 30:
+            emoji_particles = emoji_particles[-25:]
+
+        # ====================================================
         # OVERLAY VISUAL (segitiga, border, dll)
         # ====================================================
 
@@ -682,7 +847,19 @@ def main():
 
         gesture_name = ""
         gesture_color = (200, 200, 200)
-        if peace_detected:
+        if spiderman_detected:
+            gesture_name = "SPIDER-MAN WEB"
+            gesture_color = (50, 100, 255)
+        elif expr_confirmed and mangap_level > 0.35:
+            gesture_name = "KETAWA HAHAHA"
+            gesture_color = (0, 160, 255)
+        elif expr_confirmed and smile_level > 0.35:
+            gesture_name = "SENYUM"
+            gesture_color = (0, 230, 255)
+        elif expr_confirmed and sad_level > 0.35:
+            gesture_name = "SEDIH"
+            gesture_color = (255, 180, 100)
+        elif peace_detected:
             gesture_name = "BLUR"
             gesture_color = (255, 200, 100)
         elif box_blur_detected:

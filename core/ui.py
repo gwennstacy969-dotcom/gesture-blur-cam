@@ -4,6 +4,51 @@ import math
 import random
 import os
 import time
+from PIL import Image, ImageDraw, ImageFont
+
+_EMOJI_CACHE = {}
+
+def get_emoji_rgba(emoji_char, size=40):
+    key = (emoji_char, size)
+    if key in _EMOJI_CACHE:
+        return _EMOJI_CACHE[key]
+    canvas_size = int(size * 1.35)
+    img = Image.new('RGBA', (canvas_size, canvas_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font_path = "C:/Windows/Fonts/seguiemj.ttf"
+    try:
+        font = ImageFont.truetype(font_path, size)
+        draw.text((int(size * 0.15), int(size * 0.05)), emoji_char, font=font, embedded_color=True)
+    except Exception:
+        draw.ellipse([2, 2, canvas_size - 2, canvas_size - 2], fill=(255, 220, 50, 255))
+    arr = np.array(img)
+    _EMOJI_CACHE[key] = arr
+    return arr
+
+def overlay_emoji(frame, emoji_char, cx, cy, size=40, opacity=1.0):
+    if opacity <= 0.01:
+        return
+    rgba = get_emoji_rgba(emoji_char, size)
+    eh, ew = rgba.shape[:2]
+    x1 = cx - ew // 2
+    y1 = cy - eh // 2
+    x2 = x1 + ew
+    y2 = y1 + eh
+    fh, fw = frame.shape[:2]
+    rx1, ry1 = max(0, x1), max(0, y1)
+    rx2, ry2 = min(fw, x2), min(fh, y2)
+    if rx2 <= rx1 or ry2 <= ry1:
+        return
+    sx1, sy1 = rx1 - x1, ry1 - y1
+    sx2, sy2 = sx1 + (rx2 - rx1), sy1 + (ry2 - ry1)
+    crop_fg = rgba[sy1:sy2, sx1:sx2]
+    crop_bg = frame[ry1:ry2, rx1:rx2]
+    alpha = (crop_fg[:, :, 3].astype(np.float32) / 255.0) * opacity
+    alpha_3d = alpha[:, :, np.newaxis]
+    fg_bgr = crop_fg[:, :, [2, 1, 0]].astype(np.float32)
+    bg_bgr = crop_bg.astype(np.float32)
+    blended = fg_bgr * alpha_3d + bg_bgr * (1.0 - alpha_3d)
+    frame[ry1:ry2, rx1:rx2] = np.clip(blended, 0, 255).astype(np.uint8)
 
 def lerp(a, b, t):
     """Linear interpolation antara a dan b dengan faktor t."""
@@ -149,6 +194,317 @@ class BubbleParticle:
         highlight_size = max(1, s // 4)
         highlight_color = (int(255 * a), int(255 * a), int(255 * a))
         cv2.circle(frame, (hx, hy), highlight_size, highlight_color, cv2.FILLED, cv2.LINE_AA)
+
+class EmojiParticle:
+    def __init__(self, x, y, emoji, mode="senyum", frame_w=640, frame_h=480, size=None):
+        self.x = float(x)
+        self.y = float(y)
+        self.emoji = emoji
+        self.mode = mode  # "senyum", "sedih", "mangap"
+        self.frame_w = frame_w
+        self.frame_h = frame_h
+        self.life = 1.0
+        self.wobble_phase = random.uniform(0, 2 * math.pi)
+
+        if mode == "senyum":
+            # Melayang ke atas dengan lembut & goyangan halus ceria
+            self.vx = random.uniform(-0.8, 0.8)
+            self.vy = random.uniform(-2.5, -1.0)
+            self.decay = random.uniform(0.012, 0.024)
+            self.size = size or random.randint(30, 48)
+            self.wobble_speed = random.uniform(2.5, 4.5)
+            self.wobble_amp = random.uniform(1.0, 2.5)
+        elif mode == "sedih":
+            # Bertebaran dan turun perlahan seperti rintik kesedihan / air mata
+            self.vx = random.uniform(-1.0, 1.0)
+            self.vy = random.uniform(1.8, 4.0)
+            self.decay = random.uniform(0.008, 0.016)
+            self.size = size or random.randint(32, 52)
+            self.wobble_speed = random.uniform(1.5, 3.0)
+            self.wobble_amp = random.uniform(0.5, 2.0)
+        else: # "mangap" / ketawa
+            # Meledak keluar dari mulut dengan gaya busur kartun tertawa
+            angle = random.uniform(-math.pi * 0.9, -math.pi * 0.1)
+            speed = random.uniform(4.5, 9.5)
+            self.vx = speed * math.cos(angle)
+            self.vy = speed * math.sin(angle)
+            self.decay = random.uniform(0.016, 0.030)
+            self.size = size or random.randint(32, 54)
+            self.wobble_speed = random.uniform(3.0, 6.0)
+            self.wobble_amp = random.uniform(1.0, 3.0)
+
+    def update(self, current_time=0):
+        if self.mode == "senyum":
+            self.x += self.vx + math.sin(self.wobble_phase + current_time * self.wobble_speed) * self.wobble_amp
+            self.y += self.vy
+            self.vy -= 0.01
+        elif self.mode == "sedih":
+            self.x += self.vx + math.sin(self.wobble_phase + current_time * self.wobble_speed) * self.wobble_amp
+            self.y += self.vy
+            self.vy += 0.02
+        else: # mangap
+            self.x += self.vx
+            self.y += self.vy
+            self.vy += 0.22  # gravitasi
+            self.vx *= 0.98
+
+        self.life -= self.decay
+
+    def is_alive(self):
+        return self.life > 0 and -60 <= self.x <= self.frame_w + 60 and -60 <= self.y <= self.frame_h + 60
+
+    def draw(self, frame):
+        if not self.is_alive():
+            return
+        overlay_emoji(frame, self.emoji, int(self.x), int(self.y), self.size, opacity=max(0.0, min(1.0, self.life)))
+
+def draw_spiderman_web(frame, origin, dir_vec, anim_time, progress=1.0):
+    """
+    Menggambar semburan jaring Spider-Man dari tangan sesuai arah tangannya:
+    - Tali sutra kepangan bergelombang
+    - Jaring kerucut radial (radial spokes)
+    - Benang melengkung konsentris (spiral arches)
+    - Jaring laba-laba bentang lebar di ujung sasaran
+    - Semburan pendar cairan jaring di nozzle telapak
+    - Badge komik dinamis: 'THWIP! 🕸️'
+    """
+    h, w = frame.shape[:2]
+    ox, oy = origin
+    dx, dy = dir_vec
+    angle = math.atan2(dy, dx)
+
+    # Hitung batas jangkauan jaring ke tepi layar
+    max_range = 650.0
+    t_min = max_range
+    if abs(dx) > 1e-4:
+        t1 = (10 - ox) / dx
+        t2 = (w - 10 - ox) / dx
+        if t1 > 0: t_min = min(t_min, t1)
+        if t2 > 0: t_min = min(t_min, t2)
+    if abs(dy) > 1e-4:
+        t3 = (10 - oy) / dy
+        t4 = (h - 10 - oy) / dy
+        if t3 > 0: t_min = min(t_min, t3)
+        if t4 > 0: t_min = min(t_min, t4)
+    reach = max(80.0, min(max_range, t_min)) * progress
+
+    tx = int(ox + dx * reach)
+    ty = int(oy + dy * reach)
+
+    # 1. Pendar semburan jaring di telapak tangan (nozzle)
+    glow_pulse = int(12 + 6 * math.sin(anim_time * 20.0))
+    cv2.circle(frame, (ox, oy), glow_pulse + 8, (255, 180, 100), 2, cv2.LINE_AA)
+    cv2.circle(frame, (ox, oy), glow_pulse, (255, 240, 200), cv2.FILLED, cv2.LINE_AA)
+    cv2.circle(frame, (ox, oy), 5, (255, 255, 255), cv2.FILLED, cv2.LINE_AA)
+
+    # 2. Tali jaring utama (central silk cable)
+    num_segments = 25
+    prev_pt = (ox, oy)
+    for seg in range(1, num_segments + 1):
+        frac = seg / num_segments
+        cx_seg = ox + dx * reach * frac
+        cy_seg = oy + dy * reach * frac
+        wave = math.sin(anim_time * 15.0 + frac * 12.0) * (3.0 * (1.0 - frac * 0.5))
+        px = -dy * wave
+        py = dx * wave
+        curr_pt = (int(cx_seg + px), int(cy_seg + py))
+        cv2.line(frame, prev_pt, curr_pt, (255, 220, 150), 5, cv2.LINE_AA)
+        cv2.line(frame, prev_pt, curr_pt, (255, 255, 255), 2, cv2.LINE_AA)
+        prev_pt = curr_pt
+
+    # 3. Radial Web Spokes (Jari-jari jaring menyebar searah tangan)
+    num_spokes = 7
+    cone_angle = math.radians(65.0)
+    spoke_angles = [angle - cone_angle/2 + (i / (num_spokes - 1)) * cone_angle for i in range(num_spokes)]
+
+    spoke_tips = []
+    for i, sa in enumerate(spoke_angles):
+        spoke_dist = reach * (0.65 + 0.35 * math.cos((i - 3) * 0.45))
+        sx = int(ox + math.cos(sa) * spoke_dist)
+        sy = int(oy + math.sin(sa) * spoke_dist)
+        spoke_tips.append((sx, sy))
+        cv2.line(frame, (ox, oy), (sx, sy), (230, 230, 230), 1, cv2.LINE_AA)
+        cv2.circle(frame, (sx, sy), 2, (255, 255, 255), cv2.FILLED)
+
+    # 4. Concentric Arches (Benang lengkung penghubung jaring)
+    num_rings = 5
+    for r in range(1, num_rings + 1):
+        r_frac = (r / num_rings)
+        ring_pts = []
+        for i, sa in enumerate(spoke_angles):
+            spoke_dist = reach * (0.65 + 0.35 * math.cos((i - 3) * 0.45)) * r_frac
+            rx = int(ox + math.cos(sa) * spoke_dist)
+            ry = int(oy + math.sin(sa) * spoke_dist)
+            ring_pts.append((rx, ry))
+
+        for k in range(len(ring_pts) - 1):
+            p1 = ring_pts[k]
+            p2 = ring_pts[k + 1]
+            mid_p = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
+            curve_vec = (ox - mid_p[0], oy - mid_p[1])
+            cl = math.hypot(curve_vec[0], curve_vec[1])
+            if cl > 0:
+                mid_p = (int(mid_p[0] + (curve_vec[0] / cl) * 4), int(mid_p[1] + (curve_vec[1] / cl) * 4))
+            cv2.line(frame, p1, mid_p, (240, 240, 240), 1, cv2.LINE_AA)
+            cv2.line(frame, mid_p, p2, (240, 240, 240), 1, cv2.LINE_AA)
+
+    # 5. Jaring Bentang Lebar di Ujung Sasaran (Impact Web Net)
+    net_radius = int(55 * progress)
+    if net_radius > 15:
+        for net_spoke in range(8):
+            na = net_spoke * (math.pi / 4)
+            nx = int(tx + math.cos(na) * net_radius)
+            ny = int(ty + math.sin(na) * net_radius)
+            cv2.line(frame, (tx, ty), (nx, ny), (220, 220, 220), 1, cv2.LINE_AA)
+        for net_ring in [0.4, 0.7, 1.0]:
+            nr = int(net_radius * net_ring)
+            pts_ring = []
+            for net_spoke in range(8):
+                na = net_spoke * (math.pi / 4)
+                pts_ring.append((int(tx + math.cos(na) * nr), int(ty + math.sin(na) * nr)))
+            for k in range(8):
+                cv2.line(frame, pts_ring[k], pts_ring[(k + 1) % 8], (230, 230, 230), 1, cv2.LINE_AA)
+
+    # 6. Balon Komik 'THWIP! 🕸️'
+    bx = int(ox - dx * 35 - dy * 45)
+    by = int(oy - dy * 35 + dx * 45)
+    bx = max(55, min(w - 110, bx))
+    by = max(35, min(h - 45, by))
+
+    burst_rad = 28
+    burst_pts = []
+    for bi in range(12):
+        ba = bi * (2 * math.pi / 12) + anim_time * 2.0
+        r_b = burst_rad if bi % 2 == 0 else burst_rad * 0.65
+        burst_pts.append([int(bx + math.cos(ba) * r_b), int(by + math.sin(ba) * r_b)])
+    burst_arr = np.array(burst_pts, dtype=np.int32)
+    cv2.fillPoly(frame, [burst_arr], (30, 30, 220)) # Merah Spider-Man
+    cv2.polylines(frame, [burst_arr], True, (255, 255, 100), 2, cv2.LINE_AA)
+    cv2.putText(frame, "THWIP!", (bx - 24, by + 5), cv2.FONT_HERSHEY_DUPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    overlay_emoji(frame, "🕸️", bx + 22, by + 4, size=24, opacity=1.0)
+
+def draw_expression_hud(frame, expr_type, intensity, face_info, current_time):
+    """
+    Visual overlay berdasarkan ekspresi wajah:
+    - 'senyum' : rona pipi merah muda (blush) & aura ceria
+    - 'sedih'  : efek air mata mengalir dari mata & nuansa sendu
+    - 'mangap' : gelombang tawa dari mulut & balon komik HAHAHA
+    """
+    if intensity <= 0.05 or not face_info:
+        return
+
+    alpha = min(1.0, intensity)
+
+    if expr_type == "senyum":
+        l_cheek = face_info.get("left_cheek")
+        r_cheek = face_info.get("right_cheek")
+        ed = face_info.get("eye_dist", 60)
+        blush_radius = max(8, int(ed * 0.16))
+        blush_color = (130, 110, 255) # Pink BGR
+
+        overlay = frame.copy()
+        if l_cheek:
+            cv2.circle(overlay, l_cheek, blush_radius, blush_color, cv2.FILLED, cv2.LINE_AA)
+        if r_cheek:
+            cv2.circle(overlay, r_cheek, blush_radius, blush_color, cv2.FILLED, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.35 * alpha, frame, 1 - 0.35 * alpha, 0, frame)
+
+    elif expr_type == "sedih":
+        l_eye = face_info.get("left_eye")
+        r_eye = face_info.get("right_eye")
+        tear_color = (255, 200, 100) # Cyan-blue
+        tear_len = int(25 * (0.5 + 0.5 * math.sin(current_time * 8.0)))
+
+        if l_eye:
+            cv2.line(frame, l_eye, (l_eye[0], l_eye[1] + tear_len), tear_color, 2, cv2.LINE_AA)
+            cv2.circle(frame, (l_eye[0], l_eye[1] + tear_len), 3, (255, 230, 180), cv2.FILLED, cv2.LINE_AA)
+        if r_eye:
+            cv2.line(frame, r_eye, (r_eye[0], r_eye[1] + tear_len), tear_color, 2, cv2.LINE_AA)
+            cv2.circle(frame, (r_eye[0], r_eye[1] + tear_len), 3, (255, 230, 180), cv2.FILLED, cv2.LINE_AA)
+
+        h, w = frame.shape[:2]
+        border = 6
+        cv2.rectangle(frame, (0, 0), (w, h), (180, 100, 40), border)
+
+    elif expr_type == "mangap":
+        mouth_c = face_info.get("mouth_center")
+        if mouth_c:
+            for ring_idx in range(3):
+                ring_phase = (current_time * 4.0 + ring_idx * 0.33) % 1.0
+                ring_r = int(20 + ring_phase * 65)
+                ring_alpha = (1.0 - ring_phase) * alpha
+                c_val = int(255 * ring_alpha)
+                cv2.circle(frame, mouth_c, ring_r, (0, int(180 * ring_alpha), c_val), 2, cv2.LINE_AA)
+
+            forehead = face_info.get("forehead", (mouth_c[0], mouth_c[1] - 120))
+            bx = forehead[0]
+            by = max(40, forehead[1] - 50)
+            wobble = int(4 * math.sin(current_time * 12.0))
+            cv2.rectangle(frame, (bx - 70, by - 22 + wobble), (bx + 70, by + 12 + wobble), (20, 20, 20), cv2.FILLED)
+            cv2.rectangle(frame, (bx - 70, by - 22 + wobble), (bx + 70, by + 12 + wobble), (0, 180, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, "HA! HA! HA!", (bx - 60, by + wobble), cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA)
+
+def draw_expression_prediction_gauge(frame, expr_type, progress, face_info, current_time):
+    """
+    Menampilkan visual ring progress dan status saat sedang memprediksi ekspresi:
+    Mencegah spam dan memberikan feedback visual kepada pengguna sebelum efek terpicu.
+    """
+    if progress <= 0.02 or not face_info or expr_type == "neutral":
+        return
+
+    forehead = face_info.get("forehead")
+    eyes_c = face_info.get("eyes_center", (320, 240))
+    h, w = frame.shape[:2]
+
+    if forehead:
+        gx = max(95, min(w - 95, forehead[0]))
+        gy = max(40, forehead[1] - 45)
+    else:
+        gx, gy = eyes_c[0], max(40, eyes_c[1] - 75)
+
+    color_map = {
+        "senyum": ((0, 230, 255), "😊", "Menganalisa Senyum..."),
+        "sedih": ((255, 180, 100), "😢", "Menganalisa Sedih..."),
+        "mangap": ((0, 160, 255), "😂", "Mendeteksi Tawa...")
+    }
+    if expr_type not in color_map:
+        return
+
+    color, icon, text = color_map[expr_type]
+    pill_w = 180
+    pill_h = 32
+    px1, py1 = gx - pill_w // 2, gy - pill_h // 2
+    px2, py2 = px1 + pill_w, py1 + pill_h
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (px1, py1), (px2, py2), (18, 18, 22), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.80, frame, 0.20, 0, frame)
+    cv2.rectangle(frame, (px1, py1), (px2, py2), color, 1, cv2.LINE_AA)
+
+    rx = px1 + 18
+    ry = gy
+    radius = 10
+    cv2.circle(frame, (rx, ry), radius, (55, 55, 60), 2, cv2.LINE_AA)
+    end_angle = int(360 * min(1.0, progress))
+    if end_angle > 0:
+        cv2.ellipse(frame, (rx, ry), (radius, radius), -90, 0, end_angle, color, 2, cv2.LINE_AA)
+    overlay_emoji(frame, icon, rx, ry, size=14, opacity=1.0)
+
+    if progress >= 0.98:
+        status_txt = "TERKONFIRMASI! ✨"
+        cv2.putText(frame, status_txt, (px1 + 34, gy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 255, 100), 1, cv2.LINE_AA)
+    else:
+        cv2.putText(frame, text, (px1 + 34, gy - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (230, 230, 230), 1, cv2.LINE_AA)
+        bar_x = px1 + 34
+        bar_y = gy + 6
+        bar_w = 95
+        bar_h = 4
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), cv2.FILLED)
+        fill_w = int(bar_w * min(1.0, progress))
+        if fill_w > 0:
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), color, cv2.FILLED)
+        pct_text = f"{int(progress * 100)}%"
+        cv2.putText(frame, pct_text, (bar_x + bar_w + 6, gy + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.30, color, 1, cv2.LINE_AA)
 
 def draw_anime_frame(frame, x_min, y_min, x_max, y_max, alpha=1.0):
     color_outer = (int(200 * alpha), int(180 * alpha), int(50 * alpha))
@@ -450,62 +806,85 @@ def draw_active_gesture_label(frame, gesture_name, gesture_color):
 
 def draw_info_panel(frame):
     h, w = frame.shape[:2]
-    pw, ph = 360, 440
+    pw, ph = 410, 480
     px = (w - pw) // 2
     py = (h - ph) // 2
     overlay = frame.copy()
-    cv2.rectangle(overlay, (px, py), (px + pw, py + ph), (20, 20, 20), cv2.FILLED)
-    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+    cv2.rectangle(overlay, (px, py), (px + pw, py + ph), (18, 18, 22), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
     cv2.rectangle(frame, (px, py), (px + pw, py + ph), (100, 200, 255), 2, cv2.LINE_AA)
-    cv2.putText(frame, "GESTURE GUIDE", (px + 95, py + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 200, 255), 2, cv2.LINE_AA)
-    cv2.line(frame, (px + 10, py + 38), (px + pw - 10, py + 38), (80, 80, 80), 1)
-    cv2.putText(frame, "[1 TANGAN]", (px + 15, py + 56), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+    cv2.putText(frame, "GESTURE & FACE GUIDE", (px + 105, py + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2, cv2.LINE_AA)
+    cv2.line(frame, (px + 10, py + 34), (px + pw - 10, py + 34), (80, 80, 80), 1)
+
+    line_h = 17
+    # 1 TANGAN
+    cv2.putText(frame, "[1 TANGAN]", (px + 12, py + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
     gestures_1h = [
-        ("Peace (V)", "Blur Screen", (255, 200, 100)),
-        ("Thumb+Index", "Blur Area", (200, 200, 100)),
-        ("Rock Sign", "Glitch/VHS", (100, 100, 255)),
+        ("Spiderman (Jempol+Tel+Kel)", "Jaring Laba-laba 🕸️", (50, 100, 255)),
+        ("Peace Sign (V)", "Blur Full Screen", (255, 200, 100)),
+        ("Thumb+Index", "Blur Area Kotak", (200, 200, 100)),
+        ("Rock Sign (Metal)", "Glitch / VHS Effect", (100, 100, 255)),
         ("Index Only", "Spotlight", (200, 200, 100)),
         ("Pinky Only", "Color Invert", (180, 120, 255)),
-        ("Fist", "Night Vision", (0, 200, 0)),
-        ("Open Palm", "Freeze Frame", (200, 200, 200)),
-        ("Middle Only", "Thermal", (0, 180, 255)),
-        ("Ring Only", "Underwater", (200, 150, 50)),
-        ("I+M+R Fingers", "Color Pop", (100, 200, 255)),
+        ("Fist (Kepalan)", "Night Vision", (0, 200, 0)),
+        ("Open Palm (Telapak)", "Freeze Frame", (200, 200, 200)),
+        ("Middle Finger", "Thermal Vision", (0, 180, 255)),
+        ("Ring Finger", "Underwater Effect", (200, 150, 50)),
+        ("3 Fingers (T+M+R)", "Color Pop", (100, 200, 255)),
     ]
-    y_start = py + 72
-    line_h = 20
+    y_start = py + 67
     for i, (gesture, effect, c) in enumerate(gestures_1h):
         y_pos = y_start + i * line_h
-        cv2.putText(frame, gesture, (px + 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-        cv2.putText(frame, effect, (px + 190, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-    sep_y = y_start + len(gestures_1h) * line_h + 5
+        cv2.putText(frame, gesture, (px + 12, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 220, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+
+    # 2 TANGAN
+    sep_y = y_start + len(gestures_1h) * line_h + 3
     cv2.line(frame, (px + 10, sep_y), (px + pw - 10, sep_y), (80, 80, 80), 1)
-    cv2.putText(frame, "[2 TANGAN]", (px + 15, sep_y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+    cv2.putText(frame, "[2 TANGAN]", (px + 12, sep_y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
     gestures_2h = [
-        ("Triangle", "Grayscale", (200, 200, 200)),
-        ("Heart", "Love Effect", (100, 80, 255)),
-        ("Rectangle", "Anime Filter", (255, 255, 100)),
+        ("Segitiga (Jempol+Telunjuk)", "Grayscale", (200, 200, 200)),
+        ("Love / Heart Gesture", "Efek Love & Hati", (100, 80, 255)),
+        ("Kotak / Rectangle", "Anime Filter", (255, 255, 100)),
     ]
-    y_start_2h = sep_y + 34
+    y_start_2h = sep_y + 28
     for i, (gesture, effect, c) in enumerate(gestures_2h):
         y_pos = y_start_2h + i * line_h
-        cv2.putText(frame, gesture, (px + 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-        cv2.putText(frame, effect, (px + 190, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-    sep_y2 = y_start_2h + len(gestures_2h) * line_h + 5
-    cv2.line(frame, (px + 10, sep_y2), (px + pw - 10, sep_y2), (80, 80, 80), 1)
-    cv2.putText(frame, "[KEYBOARD]", (px + 15, sep_y2 + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
-    keyboard_shortcuts = [
-        ("S", "Screenshot", (100, 255, 100)),
-        ("R", "Record Video", (100, 100, 255)),
-        ("H", "Toggle Help", (150, 150, 150)),
-        ("Q", "Quit", (150, 150, 150)),
+        cv2.putText(frame, gesture, (px + 12, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 220, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+
+    # EKSPRESI WAJAH (BARU)
+    sep_face = y_start_2h + len(gestures_2h) * line_h + 3
+    cv2.line(frame, (px + 10, sep_face), (px + pw - 10, sep_face), (80, 80, 80), 1)
+    cv2.putText(frame, "[DETEKSI WAJAH]", (px + 12, sep_face + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 220, 150), 1, cv2.LINE_AA)
+    face_exprs = [
+        ("Senyum (Smile)", "Emot Senyum & Blush 😊", (0, 230, 255)),
+        ("Raut Sedih (Sad)", "Emot Sedih Bertebaran 😢", (255, 180, 100)),
+        ("Mangap (Mulut Buka)", "Efek Ketawa HAHAHA 😂", (0, 160, 255)),
     ]
-    y_start_kb = sep_y2 + 34
+    y_start_face = sep_face + 28
+    for i, (expr, eff, c) in enumerate(face_exprs):
+        y_pos = y_start_face + i * line_h
+        cv2.putText(frame, expr, (px + 12, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, eff, (px + 220, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+
+    # KEYBOARD
+    sep_y2 = y_start_face + len(face_exprs) * line_h + 3
+    cv2.line(frame, (px + 10, sep_y2), (px + pw - 10, sep_y2), (80, 80, 80), 1)
+    cv2.putText(frame, "[KEYBOARD]", (px + 12, sep_y2 + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 150, 200), 1, cv2.LINE_AA)
+    keyboard_shortcuts = [
+        ("S", "Screenshot Foto", (100, 255, 100)),
+        ("R", "Rekam / Stop Video", (100, 100, 255)),
+        ("H", "Tutup Bantuan", (150, 150, 150)),
+        ("Q", "Keluar", (150, 150, 150)),
+    ]
+    y_start_kb = sep_y2 + 28
     for i, (key, effect, c) in enumerate(keyboard_shortcuts):
         y_pos = y_start_kb + i * line_h
-        cv2.putText(frame, f"[{key}]", (px + 15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-        cv2.putText(frame, effect, (px + 190, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.37, c, 1, cv2.LINE_AA)
-    cv2.putText(frame, "Press H to hide", (px + 110, py + ph - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"[{key}]", (px + 12, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+        cv2.putText(frame, effect, (px + 220, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.34, c, 1, cv2.LINE_AA)
+
+    cv2.putText(frame, "Tekan H untuk menutup", (px + 130, py + ph - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (150, 150, 150), 1, cv2.LINE_AA)
 
 def draw_box_blur_border(frame, x_min, y_min, x_max, y_max):
     cv2.rectangle(frame, (x_min - 2, y_min - 2), (x_max + 2, y_max + 2), (150, 100, 0), 3, cv2.LINE_AA)

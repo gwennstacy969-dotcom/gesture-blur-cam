@@ -1,0 +1,15 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+env/
+venv/
+.env/
+
+# Screenshots & recordings
+captures/*.png
+captures/*.jpg
+captures/*.avi
+captures/*.mp4
